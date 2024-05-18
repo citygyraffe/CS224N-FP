@@ -5,6 +5,8 @@ from base_bert import BertPreTrainedModel
 from utils import *
 
 
+DEBUG_OUTPUT = False
+
 class BertSelfAttention(nn.Module):
   def __init__(self, config):
     super().__init__()
@@ -51,36 +53,42 @@ class BertSelfAttention(nn.Module):
 
     ### TODO
 
-    print("key", key.shape)
     [bs, seq_len, num_attention_heads, attn_head_size] = key.shape
 
-    # Normalize the queries and keys
-    query = query / (self.attention_head_size ** 0.5)
-    key = key / (self.attention_head_size ** 0.5)
-
-    # Calculate the attention scores.
+    # Calculate the attention scores size [bs, num_attention_heads, seq_len, seq_len].
     attn_scores = torch.matmul(query, key.transpose(-1, -2))
+    attn_scores = attn_scores / (self.attention_head_size ** 0.5)
 
     # Apply attention mask.
     attn_scores = attn_scores + attention_mask
 
-    # Normalize the scores.
+    # Apply softmax.
     attn_scores = F.softmax(attn_scores, dim=-1)
 
     # Multiply the attention scores with the value.
     attn_value = torch.matmul(attn_scores, value)
+    attn_value = attn_value.transpose(1, 2)
 
-    # Concatenate multi-heads.
-    attn_value = attn_value.reshape(bs, num_attention_heads, -1)
+    # Concatenate multi-heads (recover original shape).
+    attn_value = attn_value.reshape(bs, num_attention_heads, self.attention_head_size*seq_len)
 
     # START OF DEBUGGING OUTPUT
-    print("bert.py:attention")
-    print("num_attention_heads", num_attention_heads)
-    print("attn_head_size", attn_head_size)
-    print("attention_mask", attention_mask.shape)
-    print("hidden_states", key.shape)
-    print("attention_output", attn_value.shape)
-    print("-------------------------")
+    if DEBUG_OUTPUT:
+      print("bert.py:attention")
+      print("key", key.shape)
+      print("query", query.shape)
+      print("value", value.shape)
+
+      print("self.num_attention_heads", self.num_attention_heads)
+      print("num_attention_heads", num_attention_heads)
+      print("self.attention_head_size", self.attention_head_size)
+      print("attn_head_size", attn_head_size)
+
+      print("attention_mask", attention_mask.shape)
+      print("hidden_states", key.shape)
+      print("attention_scores", attn_scores.shape)
+      print("attention_values", attn_value.shape)
+      print("-------------------------")
     # END OF DEBUGGING OUTPUT
 
     return attn_value    
@@ -152,20 +160,21 @@ class BertLayer(nn.Module):
     attn_output = self.self_attention(hidden_states, attention_mask)
 
     # START OF DEBUGGING OUTPUT
-    print("bert.py:forward")
-    print("attn_output", attn_output.shape)
-    print("hidden_states", hidden_states.shape)
-    print("-------------------------")
+    if DEBUG_OUTPUT:
+      print("bert.py:forward")
+      print("attn_output", attn_output.shape)
+      print("hidden_states", hidden_states.shape)
+      print("-------------------------")
     # END OF DEBUGGING OUTPUT
 
     # 2. Add-norm for multi-head attention.
-    attn_output = self.add_norm(hidden_states, attn_output, self.attention_dense, self.attention_dropout, self.attention_layer_norm)
+    attn_output_normalized = self.add_norm(hidden_states, attn_output, self.attention_dense, self.attention_dropout, self.attention_layer_norm)
 
     # 3. Feed forward layer.
-    interm_output = self.interm_af(self.interm_dense(attn_output))
+    interm_output = self.interm_af(self.interm_dense(attn_output_normalized))
 
     # 4. Add-norm for feed forward.
-    output = self.add_norm(attn_output, interm_output, self.out_dense, self.out_dropout, self.out_layer_norm)
+    output = self.add_norm(attn_output_normalized, interm_output, self.out_dense, self.out_dropout, self.out_layer_norm)
 
     return output
 
