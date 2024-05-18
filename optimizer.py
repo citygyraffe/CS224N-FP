@@ -4,6 +4,7 @@ import math
 import torch
 from torch.optim import Optimizer
 
+DEBUG_OUTPUT = True
 
 class AdamW(Optimizer):
     def __init__(
@@ -60,7 +61,46 @@ class AdamW(Optimizer):
                 # Refer to the default project handout for more details.
 
                 ### TODO
-                raise NotImplementedError
 
+                if DEBUG_OUTPUT:
+                    print("Iteration: ", state.get("t", 0))
+                    print("hyperparameters: ", group)
+                    print("state: ", state)
+                    print("------------------------------")
+
+                    # This is here to debug and take a look to see if optimizer is working correctly
+                    if state.get("t", 0) == 2:
+                        raise NotImplementedError("AdamW in debug mode please set DEBUG_OUTPUT to False to run the optimizer.")
+
+                
+                #if not "params" in state: state["params"] = group["params"]
+
+                beta1, beta2 = group["betas"]
+                epsilon = group["eps"]
+
+                # 1. Update the first and second moments of the gradients
+                first_moment_biased = beta1 * state.get("first_moment_biased", 0) + (1 - beta1) * grad
+                second_moment_biased = beta2 * state.get("second_moment_biased", 0) + (1 - beta2) * grad ** 2
+
+                # 2. Apply bias correction
+                first_moment_corrected = first_moment_biased / (1 - (beta1 ** state.get("t", 0)))
+                second_moment_corrected = second_moment_biased / (1 - (beta2 ** state.get("t", 0)))
+
+                # 3. Update parameters (p.data)
+                p.data = p.data - alpha * first_moment_corrected / (torch.sqrt(second_moment_corrected) + epsilon)
+
+                # 4. Apply weight decay
+                p.data = p.data - group["weight_decay"] * p.data * alpha
+
+                if DEBUG_OUTPUT:
+                    print("first_moment_biased: ", first_moment_biased)
+                    print("second_moment_biased: ", second_moment_biased)
+                    print("first_moment_corrected: ", first_moment_corrected)
+                    print("second_moment_corrected: ", second_moment_corrected)
+
+                # Update state dictionary
+                state["first_moment_biased"] = first_moment_biased
+                state["second_moment_biased"] = second_moment_biased
+                state["t"] = state.get("t", 0) + 1
 
         return loss

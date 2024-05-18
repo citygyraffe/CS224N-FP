@@ -4,7 +4,6 @@ import torch.nn.functional as F
 from base_bert import BertPreTrainedModel
 from utils import *
 
-
 DEBUG_OUTPUT = False
 
 class BertSelfAttention(nn.Module):
