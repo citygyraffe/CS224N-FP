@@ -71,7 +71,7 @@ class BertSelfAttention(nn.Module):
 
     # Concatenate multi-heads.
     attn_value = attn_value.reshape(bs, seq_len, self.all_head_size)
-    
+
     return attn_value    
 
   def forward(self, hidden_states, attention_mask):
@@ -137,9 +137,19 @@ class BertLayer(nn.Module):
     4. An add-norm operation that takes the input and output of the feed forward layer.
     """
     ### TODO
-    raise NotImplementedError
+    # 1. Multi-head attention layer.
+    attn_output = self.self_attention(hidden_states, attention_mask)
 
+    # 2. Add-norm for multi-head attention.
+    attn_output = self.add_norm(hidden_states, attn_output, self.attention_dense, self.attention_dropout, self.attention_layer_norm)
 
+    # 3. Feed forward layer.
+    interm_output = self.interm_af(self.interm_dense(attn_output))
+
+    # 4. Add-norm for feed forward.
+    output = self.add_norm(attn_output, interm_output, self.out_dense, self.out_dropout, self.out_layer_norm)
+
+    return output
 
 class BertModel(BertPreTrainedModel):
   """
