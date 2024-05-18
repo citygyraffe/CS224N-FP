@@ -51,7 +51,8 @@ class BertSelfAttention(nn.Module):
 
     ### TODO
 
-    [bs, seq_len, num_attention_heads] = key.size()
+    print("key", key.shape)
+    [bs, seq_len, num_attention_heads, attn_head_size] = key.shape
 
     # Normalize the queries and keys
     query = query / (self.attention_head_size ** 0.5)
@@ -70,7 +71,17 @@ class BertSelfAttention(nn.Module):
     attn_value = torch.matmul(attn_scores, value)
 
     # Concatenate multi-heads.
-    attn_value = attn_value.reshape(bs, seq_len, self.all_head_size)
+    attn_value = attn_value.reshape(bs, num_attention_heads, -1)
+
+    # START OF DEBUGGING OUTPUT
+    print("bert.py:attention")
+    print("num_attention_heads", num_attention_heads)
+    print("attn_head_size", attn_head_size)
+    print("attention_mask", attention_mask.shape)
+    print("hidden_states", key.shape)
+    print("attention_output", attn_value.shape)
+    print("-------------------------")
+    # END OF DEBUGGING OUTPUT
 
     return attn_value    
 
@@ -139,6 +150,13 @@ class BertLayer(nn.Module):
     ### TODO
     # 1. Multi-head attention layer.
     attn_output = self.self_attention(hidden_states, attention_mask)
+
+    # START OF DEBUGGING OUTPUT
+    print("bert.py:forward")
+    print("attn_output", attn_output.shape)
+    print("hidden_states", hidden_states.shape)
+    print("-------------------------")
+    # END OF DEBUGGING OUTPUT
 
     # 2. Add-norm for multi-head attention.
     attn_output = self.add_norm(hidden_states, attn_output, self.attention_dense, self.attention_dropout, self.attention_layer_norm)
