@@ -4,7 +4,7 @@ import math
 import torch
 from torch.optim import Optimizer
 
-DEBUG_OUTPUT = True
+DEBUG_OUTPUT = False
 
 class AdamW(Optimizer):
     def __init__(
@@ -69,28 +69,33 @@ class AdamW(Optimizer):
                     print("------------------------------")
 
                     # This is here to debug and take a look to see if optimizer is working correctly
-                    if state.get("t", 0) == 2:
+                    if state.get("t", 0) == 5:
                         raise NotImplementedError("AdamW in debug mode please set DEBUG_OUTPUT to False to run the optimizer.")
 
+                # Initialize the first and second moments of the gradients and the time step
+                if(state.get("t", 0) == 0):
+                    state["first_moment_biased"] = torch.zeros_like(p.data)
+                    state["second_moment_biased"] = torch.zeros_like(p.data)
+                    state["t"] = 1
                 
-                #if not "params" in state: state["params"] = group["params"]
-
                 beta1, beta2 = group["betas"]
                 epsilon = group["eps"]
+                weight_decay_factor = group["weight_decay"]
+                current_time_step = state["t"]
 
                 # 1. Update the first and second moments of the gradients
-                first_moment_biased = beta1 * state.get("first_moment_biased", 0) + (1 - beta1) * grad
-                second_moment_biased = beta2 * state.get("second_moment_biased", 0) + (1 - beta2) * grad ** 2
+                first_moment_biased = beta1 * state["first_moment_biased"] + (1 - beta1) * grad
+                second_moment_biased = beta2 * state["second_moment_biased"] + (1 - beta2) * grad ** 2
 
                 # 2. Apply bias correction
-                first_moment_corrected = first_moment_biased / (1 - (beta1 ** state.get("t", 0)))
-                second_moment_corrected = second_moment_biased / (1 - (beta2 ** state.get("t", 0)))
+                first_moment_corrected = first_moment_biased / (1 - (beta1 ** current_time_step))
+                second_moment_corrected = second_moment_biased / (1 - (beta2 ** current_time_step))
 
                 # 3. Update parameters (p.data)
                 p.data = p.data - alpha * first_moment_corrected / (torch.sqrt(second_moment_corrected) + epsilon)
 
                 # 4. Apply weight decay
-                p.data = p.data - group["weight_decay"] * p.data * alpha
+                p.data = p.data - weight_decay_factor * p.data * alpha
 
                 if DEBUG_OUTPUT:
                     print("first_moment_biased: ", first_moment_biased)
@@ -101,6 +106,6 @@ class AdamW(Optimizer):
                 # Update state dictionary
                 state["first_moment_biased"] = first_moment_biased
                 state["second_moment_biased"] = second_moment_biased
-                state["t"] = state.get("t", 0) + 1
+                state["t"] = current_time_step + 1
 
         return loss
