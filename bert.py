@@ -120,7 +120,10 @@ class BertLayer(nn.Module):
     # Hint: Remember that BERT applies dropout to the transformed output of each sub-layer,
     # before it is added to the sub-layer input and normalized with a layer norm.
     ### TODO
-    raise NotImplementedError
+    output = dense_layer(output)
+    output = dropout(output)
+    output = ln_layer(input + output)
+    return output
 
 
   def forward(self, hidden_states, attention_mask):
