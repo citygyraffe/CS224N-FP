@@ -50,23 +50,29 @@ class BertSelfAttention(nn.Module):
     #   [bs, seq_len, num_attention_heads * attention_head_size = hidden_size].
 
     ### TODO
-    # attention_scores = torch.matmul(query, key.transpose(-2, -1))
-    # attention_scores = attention_scores / torch.sqrt(torch.tensor(self.attention_head_size, dtype=torch.float32))
 
-    # if attention_mask is not None:
-    #     attention_scores += attention_mask
+    [bs, seq_len, num_attention_heads] = key.size()
 
-    # attention_probs = F.softmax(attention_scores, dim=-1)
+    # Normalize the queries and keys
+    query = query / (self.attention_head_size ** 0.5)
+    key = key / (self.attention_head_size ** 0.5)
 
-    # # attention_probs = self.dropout(attention_probs)
+    # Calculate the attention scores.
+    attn_scores = torch.matmul(query, key.transpose(-1, -2))
 
-    # weighted_vals = torch.matmul(attention_probs, value)
+    # Apply attention mask.
+    attn_scores = attn_scores + attention_mask
 
-    # weighted_vals = weighted_vals.transpose(1, 2).contiguous()
-    # weighted_vals = weighted_vals.view(bs, seq_len, self.all_head_size)
+    # Normalize the scores.
+    attn_scores = F.softmax(attn_scores, dim=-1)
 
-    # return weighted_vals
-    raise NotImplementedError
+    # Multiply the attention scores with the value.
+    attn_value = torch.matmul(attn_scores, value)
+
+    # Concatenate multi-heads.
+    attn_value = attn_value.reshape(bs, seq_len, self.all_head_size)
+    
+    return attn_value    
 
   def forward(self, hidden_states, attention_mask):
     """
