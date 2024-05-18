@@ -50,8 +50,23 @@ class BertSelfAttention(nn.Module):
     #   [bs, seq_len, num_attention_heads * attention_head_size = hidden_size].
 
     ### TODO
-    raise NotImplementedError
+    # attention_scores = torch.matmul(query, key.transpose(-2, -1))
+    # attention_scores = attention_scores / torch.sqrt(torch.tensor(self.attention_head_size, dtype=torch.float32))
 
+    # if attention_mask is not None:
+    #     attention_scores += attention_mask
+
+    # attention_probs = F.softmax(attention_scores, dim=-1)
+
+    # # attention_probs = self.dropout(attention_probs)
+
+    # weighted_vals = torch.matmul(attention_probs, value)
+
+    # weighted_vals = weighted_vals.transpose(1, 2).contiguous()
+    # weighted_vals = weighted_vals.view(bs, seq_len, self.all_head_size)
+
+    # return weighted_vals
+    raise NotImplementedError
 
   def forward(self, hidden_states, attention_mask):
     """
@@ -156,15 +171,13 @@ class BertModel(BertPreTrainedModel):
     # Get word embedding from self.word_embedding into input_embeds.
     inputs_embeds = None
     ### TODO
-    raise NotImplementedError
-
+    inputs_embeds = self.word_embedding(input_ids)
 
     # Use pos_ids to get position embedding from self.pos_embedding into pos_embeds.
     pos_ids = self.position_ids[:, :seq_length]
     pos_embeds = None
     ### TODO
-    raise NotImplementedError
-
+    pos_embeds = self.pos_embedding(pos_ids)
 
     # Get token type ids. Since we are not considering token type, this embedding is
     # just a placeholder.
@@ -173,7 +186,10 @@ class BertModel(BertPreTrainedModel):
 
     # Add three embeddings together; then apply embed_layer_norm and dropout and return.
     ### TODO
-    raise NotImplementedError
+    embeddings = inputs_embeds + pos_embeds + tk_type_embeds
+    embeddings = self.embed_layer_norm(embeddings)
+    embeddings = self.embed_dropout(embeddings)
+    return embeddings
 
 
   def encode(self, hidden_states, attention_mask):
