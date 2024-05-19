@@ -80,6 +80,7 @@ class MultitaskBERT(nn.Module):
         self.sts_classifier = torch.nn.Linear(config.hidden_size, 5)
 
         # Paraphrase detection
+        self.paraphrase_classifier = torch.nn.Linear(config.hidden_size * 2, 2)
 
 
         # Semantical similarity
@@ -121,7 +122,11 @@ class MultitaskBERT(nn.Module):
         during evaluation.
         '''
         ### TODO
-        raise NotImplementedError
+        output_1 = self.forward(input_ids_1, attention_mask_1)
+        output_2 = self.forward(input_ids_2, attention_mask_2)
+        cat_embed = torch.cat((output_1, output_2), dim=1)
+        logits = self.paraphrase_classifier(cat_embed)
+        return logits        
 
 
     def predict_similarity(self,
