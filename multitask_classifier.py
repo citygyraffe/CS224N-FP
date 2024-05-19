@@ -109,7 +109,7 @@ class MultitaskBERT(nn.Module):
         ### TODO
         pooled_output = self.forward(input_ids, attention_mask)
         pooled_output = self.dropout(pooled_output)
-        logits = self.ln_classifier(pooled_output)
+        logits = self.sts_classifier(pooled_output)
         return logits
 
 
