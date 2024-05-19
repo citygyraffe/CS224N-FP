@@ -73,8 +73,9 @@ class MultitaskBERT(nn.Module):
                 param.requires_grad = True
         # You will want to add layers here to perform the downstream tasks.
         ### TODO
-        raise NotImplementedError
-
+        print(config)
+        self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
+        self.ln_classifier = torch.nn.Linear(config.hidden_size, config.num_labels)
 
     def forward(self, input_ids, attention_mask):
         'Takes a batch of sentences and produces embeddings for them.'
@@ -82,8 +83,12 @@ class MultitaskBERT(nn.Module):
         # Here, you can start by just returning the embeddings straight from BERT.
         # When thinking of improvements, you can later try modifying this
         # (e.g., by adding other layers).
-        ### TODO
-        raise NotImplementedError
+
+        # Retrieve BERT outputs
+        outputs = self.bert(input_ids, attention_mask)
+        # Fetch pooled output (pooled representation of each sentence)
+        pooled_output = outputs['pooler_output']
+        return pooled_output
 
 
     def predict_sentiment(self, input_ids, attention_mask):
@@ -93,7 +98,10 @@ class MultitaskBERT(nn.Module):
         Thus, your output should contain 5 logits for each sentence.
         '''
         ### TODO
-        raise NotImplementedError
+        pooled_output = self.forward(input_ids, attention_mask)
+        pooled_output = self.dropout(pooled_output)
+        logits = self.ln_classifier(pooled_output)
+        return logits
 
 
     def predict_paraphrase(self,
