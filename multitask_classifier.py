@@ -75,8 +75,16 @@ class MultitaskBERT(nn.Module):
         ### TODO
         if DEBUG_OUTPUT:
             print(config)
+        # Sentiment analysis
         self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
-        self.ln_classifier = torch.nn.Linear(config.hidden_size, config.num_labels)
+        self.sts_classifier = torch.nn.Linear(config.hidden_size, 5)
+
+        # Paraphrase detection
+
+
+        # Semantical similarity
+
+
 
     def forward(self, input_ids, attention_mask):
         'Takes a batch of sentences and produces embeddings for them.'
