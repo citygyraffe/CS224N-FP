@@ -34,7 +34,7 @@ from datasets import (
 
 from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_multitask
 
-
+DEBUG_OUTPUT = True
 TQDM_DISABLE=False
 
 
@@ -73,7 +73,8 @@ class MultitaskBERT(nn.Module):
                 param.requires_grad = True
         # You will want to add layers here to perform the downstream tasks.
         ### TODO
-        print(config)
+        if DEBUG_OUTPUT:
+            print(config)
         self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
         self.ln_classifier = torch.nn.Linear(config.hidden_size, config.num_labels)
 
