@@ -122,11 +122,11 @@ class MultitaskBERT(nn.Module):
         during evaluation.
         '''
         ### TODO
-        output_1 = self.forward(input_ids_1, attention_mask_1)
-        output_2 = self.forward(input_ids_2, attention_mask_2)
+        output_1, output_2 = self.forward(input_ids_1, attention_mask_1), self.forward(input_ids_2, attention_mask_2)
+        output_1, output_2 = self.dropout(output_1), self.dropout(output_2)
         cat_embed = torch.cat((output_1, output_2), dim=1)
         logits = self.paraphrase_classifier(cat_embed)
-        return logits        
+        return logits
 
 
     def predict_similarity(self,
@@ -137,8 +137,6 @@ class MultitaskBERT(nn.Module):
         '''
         ### TODO
         raise NotImplementedError
-
-
 
 
 def save_model(model, optimizer, args, config, filepath):
