@@ -32,7 +32,7 @@ from datasets import (
     load_multitask_data
 )
 
-from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_multitask
+from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_multitask, evaluate_sts
 
 # ADDED INCLUDES
 from tokenizer import BertTokenizer
@@ -355,20 +355,24 @@ def train_multitask(args):
 
         train_loss = train_loss / (num_batches)
 
-        dev_sentiment_accuracy,dev_sst_y_pred, dev_sst_sent_ids, \
-        dev_paraphrase_accuracy, dev_para_y_pred, dev_para_sent_ids, \
-        dev_sts_corr, dev_sts_y_pred, dev_sts_sent_ids = model_eval_multitask(sst_dev_dataloader,
-                                                                              para_dev_dataloader,
-                                                                              sts_dev_dataloader, model, device)
+        # dev_sentiment_accuracy,dev_sst_y_pred, dev_sst_sent_ids, \
+        # dev_paraphrase_accuracy, dev_para_y_pred, dev_para_sent_ids, \
+        # dev_sts_corr, dev_sts_y_pred, dev_sts_sent_ids = model_eval_multitask(sst_dev_dataloader,
+        #                                                                       para_dev_dataloader,
+        #                                                                       sts_dev_dataloader, model, device)
 
-        total_accuracy = (dev_sentiment_accuracy + dev_paraphrase_accuracy + dev_sts_corr)/3
+        dev_sts_corr, dev_sts_y_pred, dev_sts_sent_ids = evaluate_sts(sts_dev_dataloader, model, device)
+
+        #total_accuracy = (dev_sentiment_accuracy + dev_paraphrase_accuracy + dev_sts_corr)/3
+        total_accuracy = (0 + 0 + dev_sts_corr)/3
 
         if total_accuracy > best_dev_acc:
             best_dev_acc = total_accuracy
             save_model(model, optimizer, args, config, args.filepath)
             print("New Best Model!")
 
-        print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, dev acc sentiment:: {dev_sentiment_accuracy :.3f}, dev acc paraphrase :: {dev_paraphrase_accuracy :.3f}, dev acc sts :: {dev_sts_corr :.3f},")
+        print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, dev acc sentiment:: {0 :.3f}, dev acc paraphrase :: {0 :.3f}, dev acc sts :: {dev_sts_corr :.3f},")
+        # print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, dev acc sentiment:: {dev_sentiment_accuracy :.3f}, dev acc paraphrase :: {dev_paraphrase_accuracy :.3f}, dev acc sts :: {dev_sts_corr :.3f},")
 
 
 def test_multitask(args):
