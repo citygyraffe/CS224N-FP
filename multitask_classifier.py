@@ -34,7 +34,10 @@ from datasets import (
 
 from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_multitask
 
-DEBUG_OUTPUT = True
+# ADDED INCLUDES
+from tokenizer import BertTokenizer
+
+DEBUG_OUTPUT = False
 TQDM_DISABLE=False
 
 
@@ -75,16 +78,22 @@ class MultitaskBERT(nn.Module):
         ### TODO
         if DEBUG_OUTPUT:
             print(config)
-        # Sentiment analysis
+
+        # Common Resources
+        self.device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
+        self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+
+        # Common layers
         self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
-        self.sts_classifier = torch.nn.Linear(config.hidden_size, 5)
+
+        # Sentiment analysis
+        self.sentiment_classifier = torch.nn.Linear(config.hidden_size, 5)
 
         # Paraphrase detection
-        self.paraphrase_classifier = torch.nn.Linear(config.hidden_size * 2, 2)
-
+        self.paraphrase_classifier = torch.nn.Linear(config.hidden_size, 1)
 
         # Semantical similarity
-
+        self.similarity_classifier = torch.nn.Linear(config.hidden_size, 1)
 
 
     def forward(self, input_ids, attention_mask):
@@ -110,7 +119,7 @@ class MultitaskBERT(nn.Module):
         ### TODO
         pooled_output = self.forward(input_ids, attention_mask)
         pooled_output = self.dropout(pooled_output)
-        logits = self.sts_classifier(pooled_output)
+        logits = self.sentiment_classifier(pooled_output)
         return logits
 
 
@@ -122,11 +131,30 @@ class MultitaskBERT(nn.Module):
         during evaluation.
         '''
         ### TODO
-        output_1, output_2 = self.forward(input_ids_1, attention_mask_1), self.forward(input_ids_2, attention_mask_2)
-        output_1, output_2 = self.dropout(output_1), self.dropout(output_2)
-        cat_embed = torch.cat((output_1, output_2), dim=1)
-        logits = self.paraphrase_classifier(cat_embed)
-        return logits
+        if DEBUG_OUTPUT:
+            print("input_ids_1: ", input_ids_1)
+            print("input_ids_2: ", input_ids_2)
+            print("attention_mask_1: ", attention_mask_1)
+            print("attention_mask_2: ", attention_mask_2)
+
+        # PER BERT PAPER SEP TOKEN IS USED TO SEPERATE SENTENCES
+        self.seperator_tokens = torch.full((input_ids_1.shape[0], 1), self.tokenizer.sep_token_id).to(self.device)
+
+        if DEBUG_OUTPUT:
+            print("seperator_tokens shape: ", self.seperator_tokens.shape)
+            print("input_ids_1 shape: ", input_ids_1.shape)
+            print("input_ids_2 shape: ", input_ids_2.shape)
+        
+        # ADD SEP TOKENS TO INPUTS
+        inputs = torch.cat((input_ids_1, self.seperator_tokens, input_ids_2), dim=1)
+        
+        # ADD ATTENTION MASKS
+        attentions = torch.cat((attention_mask_1, torch.ones_like(self.seperator_tokens), attention_mask_2), dim=1)
+        
+        pooled_output = self.forward(inputs, attentions)
+        pooled_output = self.dropout(pooled_output)
+        logit = self.paraphrase_classifier(pooled_output)
+        return logit
 
 
     def predict_similarity(self,
@@ -136,8 +164,19 @@ class MultitaskBERT(nn.Module):
         Note that your output should be unnormalized (a logit).
         '''
         ### TODO
-        raise NotImplementedError
-
+        if DEBUG_OUTPUT:
+            print("input_ids_1: ", input_ids_1)
+            print("input_ids_2: ", input_ids_2)
+            print("attention_mask_1: ", attention_mask_1)
+            print("attention_mask_2: ", attention_mask_2)
+        
+        self.bert.pos_embedding
+        inputs = torch.cat([input_ids_1, "SEP", input_ids_2])
+        attentions = torch.cat([attention_mask_1, "SEP", attention_mask_2])
+        pooled_output = self.forward(inputs, attentions)
+        pooled_output = self.dropout(pooled_output)
+        logit = self.similarity_classifier(pooled_output)
+        return logit
 
 def save_model(model, optimizer, args, config, filepath):
     save_info = {
