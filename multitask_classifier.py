@@ -37,9 +37,11 @@ from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_mul
 # ADDED INCLUDES
 from tokenizer import BertTokenizer
 
-DEBUG_OUTPUT = False
 TQDM_DISABLE=False
 
+# CUSTOM SETTINGS
+DEBUG_OUTPUT = False
+USE_COMBINED_SST_DATASET = True
 
 # Fix the random seed.
 def seed_everything(seed=11711):
@@ -83,16 +85,16 @@ class MultitaskBERT(nn.Module):
         self.device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
         self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
-        # Common layers
-        self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
-
         # Sentiment analysis
+        self.sentiment_dropout = torch.nn.Dropout(config.hidden_dropout_prob)
         self.sentiment_classifier = torch.nn.Linear(config.hidden_size, 5)
 
         # Paraphrase detection
+        self.paraphrase_dropout = torch.nn.Dropout(config.hidden_dropout_prob)
         self.paraphrase_classifier = torch.nn.Linear(config.hidden_size, 1)
 
         # Semantical similarity
+        self.similarity_dropout = torch.nn.Dropout(config.hidden_dropout_prob)
         self.similarity_classifier = torch.nn.Linear(config.hidden_size, 1)
 
 
@@ -118,7 +120,7 @@ class MultitaskBERT(nn.Module):
         '''
         ### TODO
         pooled_output = self.forward(input_ids, attention_mask)
-        pooled_output = self.dropout(pooled_output)
+        pooled_output = self.sentiment_dropout(pooled_output)
         logits = self.sentiment_classifier(pooled_output)
         return logits
 
@@ -152,7 +154,7 @@ class MultitaskBERT(nn.Module):
         attentions = torch.cat((attention_mask_1, torch.ones_like(self.seperator_tokens), attention_mask_2), dim=1)
         
         pooled_output = self.forward(inputs, attentions)
-        pooled_output = self.dropout(pooled_output)
+        pooled_output = self.paraphrase_dropout(pooled_output)
         logit = self.paraphrase_classifier(pooled_output)
         return logit
 
@@ -185,7 +187,7 @@ class MultitaskBERT(nn.Module):
         attentions = torch.cat((attention_mask_1, torch.ones_like(self.seperator_tokens), attention_mask_2), dim=1)
         
         pooled_output = self.forward(inputs, attentions)
-        pooled_output = self.dropout(pooled_output)
+        pooled_output = self.similarity_dropout(pooled_output)
         logit = self.similarity_classifier(pooled_output)
         return logit
 
@@ -366,9 +368,15 @@ def test_multitask(args):
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--sst_train", type=str, default="data/ids-sst-train.csv")
-    parser.add_argument("--sst_dev", type=str, default="data/ids-sst-dev.csv")
-    parser.add_argument("--sst_test", type=str, default="data/ids-sst-test-student.csv")
+    
+    if USE_COMBINED_SST_DATASET:
+        parser.add_argument("--sst_train", type=str, default="data/ids-sentiment-combined-train.csv")
+        parser.add_argument("--sst_dev", type=str, default="data/ids-sentiment-combined-dev.csv")
+        parser.add_argument("--sst_test", type=str, default="data/ids-sentiment-combined-test-student.csv")
+    else:
+        parser.add_argument("--sst_train", type=str, default="data/ids-sst-train.csv")
+        parser.add_argument("--sst_dev", type=str, default="data/ids-sst-dev.csv")
+        parser.add_argument("--sst_test", type=str, default="data/ids-sst-test-student.csv")
 
     parser.add_argument("--para_train", type=str, default="data/quora-train.csv")
     parser.add_argument("--para_dev", type=str, default="data/quora-dev.csv")
