@@ -146,13 +146,13 @@ class MultitaskBERT(nn.Module):
             print("seperator_tokens shape: ", self.seperator_tokens.shape)
             print("input_ids_1 shape: ", input_ids_1.shape)
             print("input_ids_2 shape: ", input_ids_2.shape)
-        
+
         # ADD SEP TOKENS TO INPUTS
         inputs = torch.cat((input_ids_1, self.seperator_tokens, input_ids_2), dim=1)
-        
+
         # ADD ATTENTION MASKS
         attentions = torch.cat((attention_mask_1, torch.ones_like(self.seperator_tokens), attention_mask_2), dim=1)
-        
+
         pooled_output = self.forward(inputs, attentions)
         pooled_output = self.paraphrase_dropout(pooled_output)
         logit = self.paraphrase_classifier(pooled_output)
@@ -179,13 +179,13 @@ class MultitaskBERT(nn.Module):
             print("seperator_tokens shape: ", self.seperator_tokens.shape)
             print("input_ids_1 shape: ", input_ids_1.shape)
             print("input_ids_2 shape: ", input_ids_2.shape)
-        
+
         # ADD SEP TOKENS TO INPUTS
         inputs = torch.cat((input_ids_1, self.seperator_tokens, input_ids_2), dim=1)
-        
+
         # ADD ATTENTION MASKS
         attentions = torch.cat((attention_mask_1, torch.ones_like(self.seperator_tokens), attention_mask_2), dim=1)
-        
+
         pooled_output = self.forward(inputs, attentions)
         pooled_output = self.similarity_dropout(pooled_output)
         logit = self.similarity_classifier(pooled_output)
@@ -230,7 +230,7 @@ def train_multitask(args):
                                       collate_fn=sst_train_data.collate_fn)
     sst_dev_dataloader = DataLoader(sst_dev_data, shuffle=False, batch_size=args.batch_size,
                                     collate_fn=sst_dev_data.collate_fn)
-        
+
     # Paraphrase data:
     para_train_data = SentencePairDataset(para_train_data, args)
     para_dev_data = SentencePairDataset(para_dev_data, args)
@@ -239,7 +239,7 @@ def train_multitask(args):
                                         collate_fn=para_train_data.collate_fn)
     para_dev_dataloader = DataLoader(para_dev_data, shuffle=False, batch_size=args.batch_size,
                                         collate_fn=para_dev_data.collate_fn)
-    
+
     # STS data:
     sts_train_data = SentencePairDataset(sts_train_data, args)
     sts_dev_data = SentencePairDataset(sts_dev_data, args, isRegression=True)
@@ -248,7 +248,7 @@ def train_multitask(args):
                                         collate_fn=sts_train_data.collate_fn)
     sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=args.batch_size,
                                     collate_fn=sts_dev_data.collate_fn)
-    
+
 
     # A list to hold all the training data loaders
     training_data_loaders = {}
@@ -280,9 +280,9 @@ def train_multitask(args):
 
         # Pick a random task to train on
         task = random.choice(list(training_data_loaders.keys()))
-        
+
         #TODO(anksood): task is hard coded to sst for now until other tasks are implemented.
-        #task = "sst"
+        task = "sts"
 
         data_loader = training_data_loaders[task]
 
@@ -326,26 +326,28 @@ def train_multitask(args):
 
                 train_loss += loss.item()
             elif task == "sts":
-                (b_ids1, b_mask1,
-                b_ids2, b_mask2,
-                b_labels, b_sent_ids) = (batch['token_ids_1'], batch['attention_mask_1'],
-                            batch['token_ids_2'], batch['attention_mask_2'],
-                            batch['labels'], batch['sent_ids'])
+                for i in range(5):
+                    (b_ids1, b_mask1,
+                    b_ids2, b_mask2,
+                    b_labels, b_sent_ids) = (batch['token_ids_1'], batch['attention_mask_1'],
+                                batch['token_ids_2'], batch['attention_mask_2'],
+                                batch['labels'], batch['sent_ids'])
 
-                b_ids1 = b_ids1.to(device)
-                b_mask1 = b_mask1.to(device)
-                b_ids2 = b_ids2.to(device)
-                b_mask2 = b_mask2.to(device)
-                b_labels = b_labels.to(device)
+                    b_ids1 = b_ids1.to(device)
+                    b_mask1 = b_mask1.to(device)
+                    b_ids2 = b_ids2.to(device)
+                    b_mask2 = b_mask2.to(device)
+                    b_labels = b_labels.to(device)
 
-                optimizer.zero_grad()
-                logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
-                loss = F.mse_loss(logits, b_labels.view(-1).float(), reduction='sum') / args.batch_size
+                    optimizer.zero_grad()
+                    logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
+                    logits = logits.squeeze()
+                    loss = F.mse_loss(logits, b_labels.view(-1).float(), reduction='sum') / args.batch_size
 
-                loss.backward()
-                optimizer.step()
+                    loss.backward()
+                    optimizer.step()
 
-                train_loss += loss.item()
+                    train_loss += loss.item()
             else:
                 raise ValueError(f"train_multitask::Unknown task: {task}")
 
@@ -358,12 +360,13 @@ def train_multitask(args):
         dev_sts_corr, dev_sts_y_pred, dev_sts_sent_ids = model_eval_multitask(sst_dev_dataloader,
                                                                               para_dev_dataloader,
                                                                               sts_dev_dataloader, model, device)
-        
+
         total_accuracy = (dev_sentiment_accuracy + dev_paraphrase_accuracy + dev_sts_corr)/3
 
         if total_accuracy > best_dev_acc:
             best_dev_acc = total_accuracy
             save_model(model, optimizer, args, config, args.filepath)
+            print("New Best Model!")
 
         print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, dev acc sentiment:: {dev_sentiment_accuracy :.3f}, dev acc paraphrase :: {dev_paraphrase_accuracy :.3f}, dev acc sts :: {dev_sts_corr :.3f},")
 
@@ -458,7 +461,7 @@ def test_multitask(args):
 
 def get_args():
     parser = argparse.ArgumentParser()
-    
+
     if USE_COMBINED_SST_DATASET:
         parser.add_argument("--sst_train", type=str, default="data/ids-sentiment-combined-train.csv")
         parser.add_argument("--sst_dev", type=str, default="data/ids-sentiment-combined-dev.csv")
