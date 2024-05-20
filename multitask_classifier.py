@@ -241,7 +241,7 @@ def train_multitask(args):
                                         collate_fn=para_dev_data.collate_fn)
     
     # STS data:
-    sts_train_data = SentencePairTestDataset(sts_train_data, args)
+    sts_train_data = SentencePairDataset(sts_train_data, args)
     sts_dev_data = SentencePairDataset(sts_dev_data, args, isRegression=True)
 
     sts_train_dataloader = DataLoader(sts_train_data, shuffle=True, batch_size=args.batch_size,
@@ -282,11 +282,11 @@ def train_multitask(args):
         task = random.choice(list(training_data_loaders.keys()))
         
         #TODO(anksood): task is hard coded to sst for now until other tasks are implemented.
-        task = "sst"
+        #task = "sst"
 
         data_loader = training_data_loaders[task]
 
-        for batch in tqdm(data_loader, desc=f'train-{epoch}', disable=TQDM_DISABLE):
+        for batch in tqdm(data_loader, desc=f'{task}-train-{epoch}', disable=TQDM_DISABLE):
 
             if task == "sst":
                 b_ids, b_mask, b_labels = (batch['token_ids'],
@@ -304,6 +304,51 @@ def train_multitask(args):
                 optimizer.step()
 
                 train_loss += loss.item()
+            elif task == "para":
+                (b_ids1, b_mask1,
+                b_ids2, b_mask2,
+                b_labels, b_sent_ids) = (batch['token_ids_1'], batch['attention_mask_1'],
+                            batch['token_ids_2'], batch['attention_mask_2'],
+                            batch['labels'], batch['sent_ids'])
+
+                b_ids1 = b_ids1.to(device)
+                b_mask1 = b_mask1.to(device)
+                b_ids2 = b_ids2.to(device)
+                b_mask2 = b_mask2.to(device)
+                b_labels = b_labels.to(device)
+
+                optimizer.zero_grad()
+                logits = model.predict_paraphrase(b_ids1, b_mask1, b_ids2, b_mask2)
+                loss = F.binary_cross_entropy_with_logits(logits.view(-1), b_labels.view(-1).float(), reduction='sum') / args.batch_size
+
+                loss.backward()
+                optimizer.step()
+
+                train_loss += loss.item()
+            elif task == "sts":
+                (b_ids1, b_mask1,
+                b_ids2, b_mask2,
+                b_labels, b_sent_ids) = (batch['token_ids_1'], batch['attention_mask_1'],
+                            batch['token_ids_2'], batch['attention_mask_2'],
+                            batch['labels'], batch['sent_ids'])
+
+                b_ids1 = b_ids1.to(device)
+                b_mask1 = b_mask1.to(device)
+                b_ids2 = b_ids2.to(device)
+                b_mask2 = b_mask2.to(device)
+                b_labels = b_labels.to(device)
+
+                optimizer.zero_grad()
+                logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
+                loss = F.mse_loss(logits, b_labels.view(-1).float(), reduction='sum') / args.batch_size
+
+                loss.backward()
+                optimizer.step()
+
+                train_loss += loss.item()
+            else:
+                raise ValueError(f"train_multitask::Unknown task: {task}")
+
             num_batches += 1
 
         train_loss = train_loss / (num_batches)
