@@ -169,10 +169,21 @@ class MultitaskBERT(nn.Module):
             print("input_ids_2: ", input_ids_2)
             print("attention_mask_1: ", attention_mask_1)
             print("attention_mask_2: ", attention_mask_2)
+
+        # PER BERT PAPER SEP TOKEN IS USED TO SEPERATE SENTENCES
+        self.seperator_tokens = torch.full((input_ids_1.shape[0], 1), self.tokenizer.sep_token_id).to(self.device)
+
+        if DEBUG_OUTPUT:
+            print("seperator_tokens shape: ", self.seperator_tokens.shape)
+            print("input_ids_1 shape: ", input_ids_1.shape)
+            print("input_ids_2 shape: ", input_ids_2.shape)
         
-        self.bert.pos_embedding
-        inputs = torch.cat([input_ids_1, "SEP", input_ids_2])
-        attentions = torch.cat([attention_mask_1, "SEP", attention_mask_2])
+        # ADD SEP TOKENS TO INPUTS
+        inputs = torch.cat((input_ids_1, self.seperator_tokens, input_ids_2), dim=1)
+        
+        # ADD ATTENTION MASKS
+        attentions = torch.cat((attention_mask_1, torch.ones_like(self.seperator_tokens), attention_mask_2), dim=1)
+        
         pooled_output = self.forward(inputs, attentions)
         pooled_output = self.dropout(pooled_output)
         logit = self.similarity_classifier(pooled_output)
