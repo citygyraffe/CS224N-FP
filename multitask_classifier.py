@@ -42,6 +42,7 @@ TQDM_DISABLE=False
 # CUSTOM SETTINGS
 DEBUG_OUTPUT = False
 USE_COMBINED_SST_DATASET = True
+STS_TRAINING_SCALING_FACTOR = 5
 
 # Fix the random seed.
 def seed_everything(seed=11711):
@@ -241,9 +242,10 @@ def train_multitask(args):
     sts_train_data = SentencePairDataset(sts_train_data, args)
     sts_dev_data = SentencePairDataset(sts_dev_data, args, isRegression=True)
 
-    sts_train_dataloader = DataLoader(sts_train_data, shuffle=True, batch_size=args.batch_size,
+    #TODO(anksood): Hardcode batch size for STS to 8 for now
+    sts_train_dataloader = DataLoader(sts_train_data, shuffle=True, batch_size=8,
                                         collate_fn=sts_train_data.collate_fn)
-    sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=args.batch_size,
+    sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=8,
                                     collate_fn=sts_dev_data.collate_fn)
 
 
@@ -326,27 +328,28 @@ def train_multitask(args):
 
                 train_loss += loss.item()
             elif task == "sts":
-                (b_ids1, b_mask1,
-                b_ids2, b_mask2,
-                b_labels, b_sent_ids) = (batch['token_ids_1'], batch['attention_mask_1'],
-                            batch['token_ids_2'], batch['attention_mask_2'],
-                            batch['labels'], batch['sent_ids'])
+                for _ in range(STS_TRAINING_SCALING_FACTOR):
+                    (b_ids1, b_mask1,
+                    b_ids2, b_mask2,
+                    b_labels, b_sent_ids) = (batch['token_ids_1'], batch['attention_mask_1'],
+                                batch['token_ids_2'], batch['attention_mask_2'],
+                                batch['labels'], batch['sent_ids'])
 
-                b_ids1 = b_ids1.to(device)
-                b_mask1 = b_mask1.to(device)
-                b_ids2 = b_ids2.to(device)
-                b_mask2 = b_mask2.to(device)
-                b_labels = b_labels.to(device)
+                    b_ids1 = b_ids1.to(device)
+                    b_mask1 = b_mask1.to(device)
+                    b_ids2 = b_ids2.to(device)
+                    b_mask2 = b_mask2.to(device)
+                    b_labels = b_labels.to(device)
 
-                optimizer.zero_grad()
-                logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
-                logits = logits.squeeze()
-                loss = F.mse_loss(logits, b_labels.view(-1).float(), reduction='sum') / args.batch_size
+                    optimizer.zero_grad()
+                    logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
+                    logits = logits.squeeze()
+                    loss = F.mse_loss(logits, b_labels.view(-1).float(), reduction='sum') / args.batch_size
 
-                loss.backward()
-                optimizer.step()
+                    loss.backward()
+                    optimizer.step()
 
-                train_loss += loss.item()
+                    train_loss += loss.item()
             else:
                 raise ValueError(f"train_multitask::Unknown task: {task}")
 
