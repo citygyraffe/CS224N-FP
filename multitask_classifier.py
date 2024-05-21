@@ -354,11 +354,11 @@ def train_multitask(args):
 
         train_loss = train_loss / (num_batches)
 
-        dev_sentiment_accuracy,dev_sst_y_pred, dev_sst_sent_ids, \
-        dev_paraphrase_accuracy, dev_para_y_pred, dev_para_sent_ids, \
-        dev_sts_corr, dev_sts_y_pred, dev_sts_sent_ids = model_eval_multitask(sst_dev_dataloader,
-                                                                              para_dev_dataloader,
-                                                                              sts_dev_dataloader, model, device)
+        dev_sentiment_accuracy, _, _, \
+        dev_paraphrase_accuracy, _, _, \
+        dev_sts_corr, _, _ = model_eval_multitask(sst_dev_dataloader,
+                                                  para_dev_dataloader,
+                                                  sts_dev_dataloader, model, device)
 
         total_accuracy = (dev_sentiment_accuracy + dev_paraphrase_accuracy + dev_sts_corr)/3
 
@@ -500,6 +500,7 @@ def get_args():
 
     # Custom arguments
     parser.add_argument("--force_task", type=str, default="", help="Force the task to train on (sst, para, sts)")
+    parser.add_argument("--testOnly", action='store_true', help="Only run test on existing model")
 
     args = parser.parse_args()
     return args
@@ -509,5 +510,10 @@ if __name__ == "__main__":
     args = get_args()
     args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
     seed_everything(args.seed)  # Fix the seed for reproducibility.
-    train_multitask(args)
+    
+    if(not args.testOnly):
+        train_multitask(args)
+    else:
+        print("Skipping training and running test only!")
+    
     test_multitask(args)
