@@ -271,6 +271,10 @@ def train_multitask(args):
     optimizer = AdamW(model.parameters(), lr=lr)
     best_dev_acc = 0
 
+    # TODO(anksood): Add a class to track task metrics instead of task_counter
+    # Task counter dictionary
+    task_counter = {"sst": 0, "para": 0, "sts": 0}
+
     # Run for the specified number of epochs.
     for epoch in range(args.epochs):
         model.train()
@@ -356,6 +360,7 @@ def train_multitask(args):
             num_batches += 1
 
         train_loss = train_loss / (num_batches)
+        task_counter[task] += 1
 
         dev_sentiment_accuracy, _, _, \
         dev_paraphrase_accuracy, _, _, \
@@ -371,6 +376,9 @@ def train_multitask(args):
             print("New Best Model!")
 
         print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, dev acc sentiment:: {dev_sentiment_accuracy :.3f}, dev acc paraphrase :: {dev_paraphrase_accuracy :.3f}, dev acc sts :: {dev_sts_corr :.3f},")
+    
+    # TODO(anksood): Calculate metrics for each task
+    print(f"Task Counter: {task_counter}")
 
 
 def test_multitask(args):
@@ -466,12 +474,12 @@ def get_args():
 
     if USE_COMBINED_SST_DATASET:
         parser.add_argument("--sst_train", type=str, default="data/ids-sentiment-combined-train.csv")
-        parser.add_argument("--sst_dev", type=str, default="data/ids-sentiment-combined-dev.csv")
-        parser.add_argument("--sst_test", type=str, default="data/ids-sentiment-combined-test-student.csv")
     else:
         parser.add_argument("--sst_train", type=str, default="data/ids-sst-train.csv")
-        parser.add_argument("--sst_dev", type=str, default="data/ids-sst-dev.csv")
-        parser.add_argument("--sst_test", type=str, default="data/ids-sst-test-student.csv")
+    
+    # Cant use combined dataset for dev and test
+    parser.add_argument("--sst_dev", type=str, default="data/ids-sst-dev.csv")
+    parser.add_argument("--sst_test", type=str, default="data/ids-sst-test-student.csv")
 
     parser.add_argument("--para_train", type=str, default="data/quora-train.csv")
     parser.add_argument("--para_dev", type=str, default="data/quora-dev.csv")
