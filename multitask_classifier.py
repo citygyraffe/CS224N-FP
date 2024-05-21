@@ -219,9 +219,6 @@ def train_multitask(args):
     sst_train_data, num_labels,para_train_data, sts_train_data = load_multitask_data(args.sst_train,args.para_train,args.sts_train, split ='train')
     sst_dev_data, num_labels,para_dev_data, sts_dev_data = load_multitask_data(args.sst_dev,args.para_dev,args.sts_dev, split ='train')
 
-    # A list to hold all the data loaders
-    training_data_loaders = {}
-
     # Sentiment data:
     sst_train_data = SentenceClassificationDataset(sst_train_data, args)
     sst_dev_data = SentenceClassificationDataset(sst_dev_data, args)
@@ -278,11 +275,14 @@ def train_multitask(args):
         train_loss = 0
         num_batches = 0
 
-        # Pick a random task to train on
-        task = random.choice(list(training_data_loaders.keys()))
-
-        #TODO(anksood): task is hard coded to sst for now until other tasks are implemented.
-        task = "sts"
+        # Pick a random task to train on if task is not forced via input args
+        task = None
+        if(args.force_task != ""):
+            print(f"Training on a forced task: {args.force_task}")
+            task = args.force_task
+        else:
+            print("Training on a random task per epoch")
+            task = random.choice(list(training_data_loaders.keys()))
 
         data_loader = training_data_loaders[task]
 
@@ -326,28 +326,27 @@ def train_multitask(args):
 
                 train_loss += loss.item()
             elif task == "sts":
-                for i in range(5):
-                    (b_ids1, b_mask1,
-                    b_ids2, b_mask2,
-                    b_labels, b_sent_ids) = (batch['token_ids_1'], batch['attention_mask_1'],
-                                batch['token_ids_2'], batch['attention_mask_2'],
-                                batch['labels'], batch['sent_ids'])
+                (b_ids1, b_mask1,
+                b_ids2, b_mask2,
+                b_labels, b_sent_ids) = (batch['token_ids_1'], batch['attention_mask_1'],
+                            batch['token_ids_2'], batch['attention_mask_2'],
+                            batch['labels'], batch['sent_ids'])
 
-                    b_ids1 = b_ids1.to(device)
-                    b_mask1 = b_mask1.to(device)
-                    b_ids2 = b_ids2.to(device)
-                    b_mask2 = b_mask2.to(device)
-                    b_labels = b_labels.to(device)
+                b_ids1 = b_ids1.to(device)
+                b_mask1 = b_mask1.to(device)
+                b_ids2 = b_ids2.to(device)
+                b_mask2 = b_mask2.to(device)
+                b_labels = b_labels.to(device)
 
-                    optimizer.zero_grad()
-                    logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
-                    logits = logits.squeeze()
-                    loss = F.mse_loss(logits, b_labels.view(-1).float(), reduction='sum') / args.batch_size
+                optimizer.zero_grad()
+                logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
+                logits = logits.squeeze()
+                loss = F.mse_loss(logits, b_labels.view(-1).float(), reduction='sum') / args.batch_size
 
-                    loss.backward()
-                    optimizer.step()
+                loss.backward()
+                optimizer.step()
 
-                    train_loss += loss.item()
+                train_loss += loss.item()
             else:
                 raise ValueError(f"train_multitask::Unknown task: {task}")
 
@@ -498,6 +497,9 @@ def get_args():
     parser.add_argument("--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=8)
     parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
     parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
+
+    # Custom arguments
+    parser.add_argument("--force_task", type=str, default="", help="Force the task to train on (sst, para, sts)")
 
     args = parser.parse_args()
     return args
