@@ -387,6 +387,13 @@ def train_multitask(args):
     # Create a batch processor to process the batches
     batch_processor = BatchProcessor(model, optimizer, args, config)
 
+    # SMART: regularization strength
+    lambda_reg_str = 0.1
+    # SMART: perturbation strength
+    alpha = 0.01
+    # SMART: random noise to apply to model parameters
+    epsilon = torch.randn_like(model.parameters())
+
     # Run for the specified number of epochs.
     for epoch in range(args.epochs):
         model.train()
