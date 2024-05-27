@@ -75,6 +75,7 @@ class MultitaskBERT(nn.Module):
         self.bert = BertModel.from_pretrained('bert-base-uncased')
         # last-linear-layer mode does not require updating BERT paramters.
         assert config.fine_tune_mode in ["last-linear-layer", "full-model"]
+        print(f"Fine-tune mode: {config.fine_tune_mode}")
         for param in self.bert.parameters():
             if config.fine_tune_mode == 'last-linear-layer':
                 param.requires_grad = False
