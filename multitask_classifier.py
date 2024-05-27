@@ -275,6 +275,13 @@ def train_multitask(args):
     # Task counter dictionary
     task_counter = {"sst": 0, "para": 0, "sts": 0}
 
+    # SMART: regularization strength
+    lambda_reg_str = 0.1
+    # SMART: perturbation strength
+    alpha = 0.01
+    # SMART: random noise to apply to model parameters
+    epsilon = torch.randn_like(model.parameters())
+
     # Run for the specified number of epochs.
     for epoch in range(args.epochs):
         model.train()
@@ -306,10 +313,35 @@ def train_multitask(args):
                 logits = model.predict_sentiment(b_ids, b_mask)
                 loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / args.batch_size
 
-                loss.backward()
+                # SMART: save original model params
+                original_params = [p.clone() for p in model.parameters()]
+
+                # SMART: perturb model params
+                with torch.no_grad():
+                    for p in model.parameters():
+                        if p.requires_grad:
+                            p += alpha * epsilon
+
+                # SMART: get loss from perturbed model
+                logits_perturbed = model.predict_sentiment(b_ids, b_mask)
+                loss_perturbed = F.cross_entropy(logits_perturbed, b_labels.view(-1), reduction='sum') / args.batch_size
+
+                # SMART: get new loss applying SMART
+                smart_loss = loss_perturbed - loss
+                total_loss = loss + lambda_reg_str * smart_loss
+
+                # SMART: restore original model params
+                with torch.no_grad():
+                    for p, original in zip(model.parameters(), original_params):
+                        p.copy_(original)
+
+                # loss.backward()
+                total_loss.backward()
+
                 optimizer.step()
 
-                train_loss += loss.item()
+                # train_loss += loss.item()
+                train_loss += total_loss.item()
             elif task == "para":
                 (b_ids1, b_mask1,
                 b_ids2, b_mask2,
