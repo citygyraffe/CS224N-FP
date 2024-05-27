@@ -32,6 +32,9 @@ from datasets import (
     load_multitask_data
 )
 
+# Custom imports
+from task_scheduler import TaskScheduler
+
 from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_multitask
 
 # ADDED INCLUDES
@@ -42,7 +45,7 @@ TQDM_DISABLE=False
 # CUSTOM SETTINGS
 DEBUG_OUTPUT = False
 USE_COMBINED_SST_DATASET = True
-STS_TRAINING_SCALING_FACTOR = 5
+STS_TRAINING_SCALING_FACTOR = 1
 
 # Fix the random seed.
 def seed_everything(seed=11711):
@@ -242,10 +245,9 @@ def train_multitask(args):
     sts_train_data = SentencePairDataset(sts_train_data, args)
     sts_dev_data = SentencePairDataset(sts_dev_data, args, isRegression=True)
 
-    #TODO(anksood): Hardcode batch size for STS to 8 for now
-    sts_train_dataloader = DataLoader(sts_train_data, shuffle=True, batch_size=8,
+    sts_train_dataloader = DataLoader(sts_train_data, shuffle=True, batch_size=args.batch_size,
                                         collate_fn=sts_train_data.collate_fn)
-    sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=8,
+    sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=args.batch_size,
                                     collate_fn=sts_dev_data.collate_fn)
 
 
@@ -271,9 +273,8 @@ def train_multitask(args):
     optimizer = AdamW(model.parameters(), lr=lr)
     best_dev_acc = 0
 
-    # TODO(anksood): Add a class to track task metrics instead of task_counter
-    # Task counter dictionary
-    task_counter = {"sst": 0, "para": 0, "sts": 0}
+    # Create a task scheduler to determine which tasks to train on
+    scheduler = TaskScheduler(args, ["sst", "para", "sts"], [sst_train_dataloader.__len__(), para_train_dataloader.__len__(), sts_train_dataloader.__len__()])
 
     # Run for the specified number of epochs.
     for epoch in range(args.epochs):
@@ -281,14 +282,9 @@ def train_multitask(args):
         train_loss = 0
         num_batches = 0
 
-        # Pick a random task to train on if task is not forced via input args
-        task = None
-        if(args.force_task != ""):
-            print(f"Training on a forced task: {args.force_task}")
-            task = args.force_task
-        else:
-            print("Training on a random task per epoch")
-            task = random.choice(list(training_data_loaders.keys()))
+        scheduler.step_epoch()
+        task = scheduler.get_next_task()
+        scheduler.print_task_distribution()
 
         data_loader = training_data_loaders[task]
 
@@ -360,7 +356,6 @@ def train_multitask(args):
             num_batches += 1
 
         train_loss = train_loss / (num_batches)
-        task_counter[task] += 1
 
         dev_sentiment_accuracy, _, _, \
         dev_paraphrase_accuracy, _, _, \
@@ -377,9 +372,6 @@ def train_multitask(args):
 
         print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, dev acc sentiment:: {dev_sentiment_accuracy :.3f}, dev acc paraphrase :: {dev_paraphrase_accuracy :.3f}, dev acc sts :: {dev_sts_corr :.3f},")
     
-    # TODO(anksood): Calculate metrics for each task
-    print(f"Task Counter: {task_counter}")
-
 
 def test_multitask(args):
     '''Test and save predictions on the dev and test sets of all three tasks.'''
@@ -510,8 +502,9 @@ def get_args():
     parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
 
     # Custom arguments
-    parser.add_argument("--force_task", type=str, default="", help="Force the task to train on (sst, para, sts)")
     parser.add_argument("--testOnly", action='store_true', help="Only run test on existing model")
+    parser.add_argument("--force_task", type=str, choices=('', 'sst', 'para', 'sts'), default="", help="Force the task to train on (sst, para, sts)")
+    parser.add_argument("--scheduling_policy", type=str, choices=('random', 'round-robin', 'annealed-sampling'), default="round-robin", help="Scheduling policy for task selection")
 
     args = parser.parse_args()
     return args
