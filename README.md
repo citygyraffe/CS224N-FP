@@ -15,12 +15,8 @@ And Part 2 targets:
 * datasets.py: Possibly useful functions/classes for extensions.
 * evaluation.py: Possibly useful functions/classes for extensions.
 
-## Setup instructions
 
-Follow `setup.sh` to properly setup a conda environment and install dependencies.
-
-
-## Baseline implementation for multitask minBERT
+## Baseline implementation for multitask minBERT (Part 2)
 
 Baseline configuration
 * 30 epochs of fine-tuning with last linear layer or full model training mode
@@ -34,9 +30,9 @@ Below is the performance for each dataset's dev evaluation:
 * STS (correlation): 0.320 (LLL), 0.855 (full)
 
 To run the job for fine-tuning and evaluating, use commands:
-* Full model training mode
+* Full model training mode:
 `python3 multitask_classifier.py --use_gpu --epochs 30 --batch_size 16 --fine-tune-mode full-model`
-* Last linear layer training mode
+* Last linear layer training mode:
 `python3 multitask_classifier.py --use_gpu --epochs 30 --batch_size 16 --fine-tune-mode last-linear-layer`
 
 
