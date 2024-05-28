@@ -39,6 +39,8 @@ from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_mul
 
 # ADDED INCLUDES
 from tokenizer import BertTokenizer
+from lora_layer import LoRALayer, LinearWithLoRALayer
+
 
 TQDM_DISABLE=False
 
@@ -81,6 +83,22 @@ class MultitaskBERT(nn.Module):
                 param.requires_grad = False
             elif config.fine_tune_mode == 'full-model':
                 param.requires_grad = True
+
+        # Add a LoRA layer to linear layers in the self-attention components
+        # by replacing the default linear laryer with a LinearWithLoRALayer
+        # Disable gradient updates for BERT parameters if using LoRA so that
+        # only LoRA parameters will be updated for better efficiency
+        if config.lora:
+            print("Using LoRA in BERT layers")
+            for param in self.bert.parameters():
+                param.requires_grad = False
+            # Add lora layers to all of the self attention components
+            for layer in self.bert.bert_layers:
+                layer.self_attention.query = LinearWithLoRALayer(layer.self_attention.query, config.lora_rank, 1)
+                layer.self_attention.key = LinearWithLoRALayer(layer.self_attention.key, config.lora_rank, 1)
+                layer.self_attention.value = LinearWithLoRALayer(layer.self_attention.value, config.lora_rank, 1)
+
+
         # You will want to add layers here to perform the downstream tasks.
         ### TODO
         if DEBUG_OUTPUT:
@@ -326,12 +344,20 @@ def train_multitask(args):
               'num_labels': num_labels,
               'hidden_size': 768,
               'data_dir': '.',
-              'fine_tune_mode': args.fine_tune_mode}
+              'fine_tune_mode': args.fine_tune_mode,
+              'lora': args.lora,
+              'lora_rank': args.lora_rank}
 
     config = SimpleNamespace(**config)
 
     model = MultitaskBERT(config)
     model = model.to(device)
+
+    print(model)
+    print(f"Parameters requiring gradient update: {sum(param.numel() for param in model.parameters() if param.requires_grad)}")
+
+    for name, param in model.named_parameters():
+        print(f"{name}: {param.requires_grad}")
 
     lr = args.lr
     optimizer = AdamW(model.parameters(), lr=lr)
@@ -347,7 +373,7 @@ def train_multitask(args):
         num_batches = 0
 
         scheduler.step_epoch()
-        
+
         if args.scheduling_mode == 'epoch':
             print("Using epoch scheduling mode")
             task = scheduler.get_next_task()
@@ -384,7 +410,7 @@ def train_multitask(args):
                 print("New Best Model!")
 
             print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, dev acc sentiment:: {dev_sentiment_accuracy :.3f}, dev acc paraphrase :: {dev_paraphrase_accuracy :.3f}, dev acc sts :: {dev_sts_corr :.3f},")
-    
+
     # TODO(anksood): Calculate metrics for each task
     print(f"Task Counter: {task_counter}")
 
@@ -524,6 +550,9 @@ def get_args():
     parser.add_argument("--num_batches_per_epoch", type=int, default=0, help="Number of batches per epoch (used by batch scheduling mode)")
     parser.add_argument("--eval_epochs", type=int, default=1, help="Run evaluation on dev set every eval_epochs")
 
+    # Arguments for LoRA finetuning
+    parser.add_argument("--lora", action='store_true', default=False, help="Use LoRA for training")
+    parser.add_argument("--lora_rank", type=int, default=0, help="Rank of LoRA matrix. 0 to skip LoRA")
 
     args = parser.parse_args()
     return args
