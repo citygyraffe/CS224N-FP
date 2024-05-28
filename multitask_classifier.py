@@ -280,7 +280,7 @@ def train_multitask(args):
     # SMART: perturbation strength
     alpha = 0.01
     # SMART: random noise to apply to model parameters
-    epsilon = torch.randn_like(model.parameters())
+    # epsilon = torch.randn_like(model.parameters())
 
     # Run for the specified number of epochs.
     for epoch in range(args.epochs):
@@ -312,15 +312,23 @@ def train_multitask(args):
                 optimizer.zero_grad()
                 logits = model.predict_sentiment(b_ids, b_mask)
                 loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / args.batch_size
+                loss.backward(retain_graph=True)
 
-                # SMART: save original model params
-                original_params = [p.clone() for p in model.parameters()]
+                # original_params = [p.clone() for p in model.parameters()]
+                original_params = {}
+                for name, param in model.named_parameters():
+                    if param.requires_grad:
+                        # SMART: save original model params
+                        original_params[name] = param.data.clone()
+                        # SMART: perturb model params
+                        noise = torch.randn_like(param)
+                        param.data += alpha * noise
 
                 # SMART: perturb model params
-                with torch.no_grad():
-                    for p in model.parameters():
-                        if p.requires_grad:
-                            p += alpha * epsilon
+                # with torch.no_grad():
+                #     for p in model.parameters():
+                #         if p.requires_grad:
+                #             p += alpha * epsilon
 
                 # SMART: get loss from perturbed model
                 logits_perturbed = model.predict_sentiment(b_ids, b_mask)
@@ -331,11 +339,13 @@ def train_multitask(args):
                 total_loss = loss + lambda_reg_str * smart_loss
 
                 # SMART: restore original model params
-                with torch.no_grad():
-                    for p, original in zip(model.parameters(), original_params):
-                        p.copy_(original)
+                # with torch.no_grad():
+                #     for p, original in zip(model.parameters(), original_params):
+                #         p.copy_(original)
+                for name, param in model.named_parameters():
+                    if param.requires_grad:
+                        param.data.copy_(original_params[name])
 
-                # loss.backward()
                 total_loss.backward()
 
                 optimizer.step()
@@ -358,11 +368,45 @@ def train_multitask(args):
                 optimizer.zero_grad()
                 logits = model.predict_paraphrase(b_ids1, b_mask1, b_ids2, b_mask2)
                 loss = F.binary_cross_entropy_with_logits(logits.view(-1), b_labels.view(-1).float(), reduction='sum') / args.batch_size
+                loss.backward(retain_graph=True)
 
-                loss.backward()
+                original_params = {}
+                for name, param in model.named_parameters():
+                    if param.requires_grad:
+                        # SMART: save original model params
+                        original_params[name] = param.data.clone()
+                        # SMART: perturb model params
+                        noise = torch.randn_like(param)
+                        param.data += alpha * noise
+
+                # SMART: perturb model params
+                # with torch.no_grad():
+                #     for p in model.parameters():
+                #         if p.requires_grad:
+                #             p += alpha * epsilon
+
+                # SMART: get loss from perturbed model
+                logits_perturbed = model.predict_paraphrase(b_ids1, b_mask1, b_ids2, b_mask2)
+                loss_perturbed = F.binary_cross_entropy_with_logits(logits_perturbed.view(-1), b_labels.view(-1), reduction='sum') / args.batch_size
+
+                # SMART: get new loss applying SMART
+                smart_loss = loss_perturbed - loss
+                total_loss = loss + lambda_reg_str * smart_loss
+
+                # SMART: restore original model params
+                # with torch.no_grad():
+                #     for p, original in zip(model.parameters(), original_params):
+                #         p.copy_(original)
+                for name, param in model.named_parameters():
+                    if param.requires_grad:
+                        param.data.copy_(original_params[name])
+
+                total_loss.backward()
+
                 optimizer.step()
 
-                train_loss += loss.item()
+                # train_loss += loss.item()
+                train_loss += total_loss.item()
             elif task == "sts":
                 for _ in range(STS_TRAINING_SCALING_FACTOR):
                     (b_ids1, b_mask1,
@@ -381,11 +425,46 @@ def train_multitask(args):
                     logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
                     logits = logits.squeeze()
                     loss = F.mse_loss(logits, b_labels.view(-1).float(), reduction='sum') / args.batch_size
+                    loss.backward(retain_graph=True)
 
-                    loss.backward()
+                    original_params = {}
+                    for name, param in model.named_parameters():
+                        if param.requires_grad:
+                            # SMART: save original model params
+                            original_params[name] = param.data.clone()
+                            # SMART: perturb model params
+                            noise = torch.randn_like(param)
+                            param.data += alpha * noise
+
+                    # SMART: perturb model params
+                    # with torch.no_grad():
+                    #     for p in model.parameters():
+                    #         if p.requires_grad:
+                    #             p += alpha * epsilon
+
+                    # SMART: get loss from perturbed model
+                    logits_perturbed = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
+                    logits_perturbed = logits_perturbed.squeeze()
+                    loss_perturbed = F.mse_loss(logits_perturbed, b_labels.view(-1).float(), reduction='sum') / args.batch_size
+
+                    # SMART: get new loss applying SMART
+                    smart_loss = loss_perturbed - loss
+                    total_loss = loss + lambda_reg_str * smart_loss
+
+                    # SMART: restore original model params
+                    # with torch.no_grad():
+                    #     for p, original in zip(model.parameters(), original_params):
+                    #         p.copy_(original)
+                    for name, param in model.named_parameters():
+                        if param.requires_grad:
+                            param.data.copy_(original_params[name])
+
+                    total_loss.backward()
+
                     optimizer.step()
 
-                    train_loss += loss.item()
+                    # train_loss += loss.item()
+                    train_loss += total_loss.item()
             else:
                 raise ValueError(f"train_multitask::Unknown task: {task}")
 
