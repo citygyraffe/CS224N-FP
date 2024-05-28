@@ -90,13 +90,16 @@ class MultitaskBERT(nn.Module):
         # only LoRA parameters will be updated for better efficiency
         if config.lora:
             print("Using LoRA in BERT layers")
-            for param in self.bert.parameters():
-                param.requires_grad = False
-            # Add lora layers to all of the self attention components
+            for param in self.bert.bert_layers.parameters():
+                param.requires_grad = False # Freeze the original BERT layers
             for layer in self.bert.bert_layers:
+                # Add lora layers to all of the self attention components
                 layer.self_attention.query = LinearWithLoRALayer(layer.self_attention.query, config.lora_rank, 1)
-                layer.self_attention.key = LinearWithLoRALayer(layer.self_attention.key, config.lora_rank, 1)
+                # layer.self_attention.key = LinearWithLoRALayer(layer.self_attention.key, config.lora_rank, 1)
                 layer.self_attention.value = LinearWithLoRALayer(layer.self_attention.value, config.lora_rank, 1)
+                # Add lora layers to feed forward components
+                layer.interm_dense = LinearWithLoRALayer(layer.interm_dense, config.lora_rank, 1)
+                layer.out_dense = LinearWithLoRALayer(layer.out_dense, config.lora_rank, 1)
 
 
         # You will want to add layers here to perform the downstream tasks.
@@ -356,8 +359,8 @@ def train_multitask(args):
     print(model)
     print(f"Parameters requiring gradient update: {sum(param.numel() for param in model.parameters() if param.requires_grad)}")
 
-    for name, param in model.named_parameters():
-        print(f"{name}: {param.requires_grad}")
+    # for name, param in model.named_parameters():
+    #     print(f"{name}: {param.requires_grad}")
 
     lr = args.lr
     optimizer = AdamW(model.parameters(), lr=lr)
@@ -410,9 +413,6 @@ def train_multitask(args):
                 print("New Best Model!")
 
             print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, dev acc sentiment:: {dev_sentiment_accuracy :.3f}, dev acc paraphrase :: {dev_paraphrase_accuracy :.3f}, dev acc sts :: {dev_sts_corr :.3f},")
-
-    # TODO(anksood): Calculate metrics for each task
-    print(f"Task Counter: {task_counter}")
 
 def test_multitask(args):
     '''Test and save predictions on the dev and test sets of all three tasks.'''
