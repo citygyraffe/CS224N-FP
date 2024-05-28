@@ -392,7 +392,7 @@ def train_multitask(args):
     # SMART: perturbation strength
     alpha = 0.01
     # SMART: random noise to apply to model parameters
-    epsilon = torch.randn_like(model.parameters())
+    # epsilon = torch.randn_like(model.parameters())
 
     # Run for the specified number of epochs.
     for epoch in range(args.epochs):
