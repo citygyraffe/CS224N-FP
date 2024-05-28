@@ -387,7 +387,7 @@ def train_multitask(args):
 
                 # SMART: get loss from perturbed model
                 logits_perturbed = model.predict_paraphrase(b_ids1, b_mask1, b_ids2, b_mask2)
-                loss_perturbed = F.binary_cross_entropy_with_logits(logits_perturbed.view(-1), b_labels.view(-1), reduction='sum') / args.batch_size
+                loss_perturbed = F.binary_cross_entropy_with_logits(logits_perturbed.view(-1), b_labels.view(-1).float(), reduction='sum') / args.batch_size
 
                 # SMART: get new loss applying SMART
                 smart_loss = loss_perturbed - loss
