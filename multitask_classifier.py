@@ -369,21 +369,24 @@ def train_multitask(args):
 
         train_loss = train_loss / (num_batches)
 
-        dev_sentiment_accuracy, _, _, \
-        dev_paraphrase_accuracy, _, _, \
-        dev_sts_corr, _, _ = model_eval_multitask(sst_dev_dataloader,
-                                                  para_dev_dataloader,
-                                                  sts_dev_dataloader, model, device)
+        if (epoch + 1) % args.eval_epochs == 0:
+            dev_sentiment_accuracy, _, _, \
+            dev_paraphrase_accuracy, _, _, \
+            dev_sts_corr, _, _ = model_eval_multitask(sst_dev_dataloader,
+                                                    para_dev_dataloader,
+                                                    sts_dev_dataloader, model, device)
 
-        total_accuracy = (dev_sentiment_accuracy + dev_paraphrase_accuracy + dev_sts_corr)/3
+            total_accuracy = (dev_sentiment_accuracy + dev_paraphrase_accuracy + dev_sts_corr)/3
 
-        if total_accuracy > best_dev_acc:
-            best_dev_acc = total_accuracy
-            save_model(model, optimizer, args, config, args.filepath)
-            print("New Best Model!")
+            if total_accuracy > best_dev_acc:
+                best_dev_acc = total_accuracy
+                save_model(model, optimizer, args, config, args.filepath)
+                print("New Best Model!")
 
-        print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, dev acc sentiment:: {dev_sentiment_accuracy :.3f}, dev acc paraphrase :: {dev_paraphrase_accuracy :.3f}, dev acc sts :: {dev_sts_corr :.3f},")
+            print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, dev acc sentiment:: {dev_sentiment_accuracy :.3f}, dev acc paraphrase :: {dev_paraphrase_accuracy :.3f}, dev acc sts :: {dev_sts_corr :.3f},")
     
+    # TODO(anksood): Calculate metrics for each task
+    print(f"Task Counter: {task_counter}")
 
 def test_multitask(args):
     '''Test and save predictions on the dev and test sets of all three tasks.'''
@@ -480,7 +483,7 @@ def get_args():
         parser.add_argument("--sst_train", type=str, default="data/ids-sentiment-combined-train.csv")
     else:
         parser.add_argument("--sst_train", type=str, default="data/ids-sst-train.csv")
-    
+
     # Cant use combined dataset for dev and test
     parser.add_argument("--sst_dev", type=str, default="data/ids-sst-dev.csv")
     parser.add_argument("--sst_test", type=str, default="data/ids-sst-test-student.csv")
@@ -519,6 +522,8 @@ def get_args():
     parser.add_argument("--scheduling_policy", type=str, choices=('random', 'round-robin', 'annealed-sampling'), default="round-robin", help="Scheduling policy for task selection")
     parser.add_argument("--scheduling_mode", type=str, choices=('epoch', 'batch'), default='epoch', help="Scheduling mode for task selection (single task per epoch or per batch)")
     parser.add_argument("--num_batches_per_epoch", type=int, default=0, help="Number of batches per epoch (used by batch scheduling mode)")
+    parser.add_argument("--eval_epochs", type=int, default=1, help="Run evaluation on dev set every eval_epochs")
+
 
     args = parser.parse_args()
     return args
@@ -528,10 +533,10 @@ if __name__ == "__main__":
     args = get_args()
     args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
     seed_everything(args.seed)  # Fix the seed for reproducibility.
-    
+
     if(not args.testOnly):
         train_multitask(args)
     else:
         print("Skipping training and running test only!")
-    
+
     test_multitask(args)
