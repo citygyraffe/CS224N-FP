@@ -32,6 +32,9 @@ from datasets import (
     load_multitask_data
 )
 
+# Custom imports
+from task_scheduler import TaskScheduler
+
 from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_multitask
 
 # ADDED INCLUDES
@@ -42,7 +45,7 @@ TQDM_DISABLE=False
 # CUSTOM SETTINGS
 DEBUG_OUTPUT = False
 USE_COMBINED_SST_DATASET = True
-STS_TRAINING_SCALING_FACTOR = 5
+STS_TRAINING_SCALING_FACTOR = 1
 
 # Fix the random seed.
 def seed_everything(seed=11711):
@@ -72,6 +75,7 @@ class MultitaskBERT(nn.Module):
         self.bert = BertModel.from_pretrained('bert-base-uncased')
         # last-linear-layer mode does not require updating BERT paramters.
         assert config.fine_tune_mode in ["last-linear-layer", "full-model"]
+        print(f"Fine-tune mode: {config.fine_tune_mode}")
         for param in self.bert.parameters():
             if config.fine_tune_mode == 'last-linear-layer':
                 param.requires_grad = False
@@ -206,6 +210,69 @@ def save_model(model, optimizer, args, config, filepath):
     torch.save(save_info, filepath)
     print(f"save the model to {filepath}")
 
+def process_batch(task, batch, device, model, optimizer, args):
+    if task == "sst":
+        b_ids, b_mask, b_labels = (batch['token_ids'],
+                                batch['attention_mask'], batch['labels'])
+
+        b_ids = b_ids.to(device)
+        b_mask = b_mask.to(device)
+        b_labels = b_labels.to(device)
+
+        optimizer.zero_grad()
+        logits = model.predict_sentiment(b_ids, b_mask)
+        loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / args.batch_size
+
+        loss.backward()
+        optimizer.step()
+
+        return loss.item()
+    elif task == "para":
+        (b_ids1, b_mask1,
+        b_ids2, b_mask2,
+        b_labels, b_sent_ids) = (batch['token_ids_1'], batch['attention_mask_1'],
+                    batch['token_ids_2'], batch['attention_mask_2'],
+                    batch['labels'], batch['sent_ids'])
+
+        b_ids1 = b_ids1.to(device)
+        b_mask1 = b_mask1.to(device)
+        b_ids2 = b_ids2.to(device)
+        b_mask2 = b_mask2.to(device)
+        b_labels = b_labels.to(device)
+
+        optimizer.zero_grad()
+        logits = model.predict_paraphrase(b_ids1, b_mask1, b_ids2, b_mask2)
+        loss = F.binary_cross_entropy_with_logits(logits.view(-1), b_labels.view(-1).float(), reduction='sum') / args.batch_size
+
+        loss.backward()
+        optimizer.step()
+
+        return loss.item()
+    elif task == "sts":
+        for _ in range(STS_TRAINING_SCALING_FACTOR):
+            (b_ids1, b_mask1,
+            b_ids2, b_mask2,
+            b_labels, b_sent_ids) = (batch['token_ids_1'], batch['attention_mask_1'],
+                        batch['token_ids_2'], batch['attention_mask_2'],
+                        batch['labels'], batch['sent_ids'])
+
+            b_ids1 = b_ids1.to(device)
+            b_mask1 = b_mask1.to(device)
+            b_ids2 = b_ids2.to(device)
+            b_mask2 = b_mask2.to(device)
+            b_labels = b_labels.to(device)
+
+            optimizer.zero_grad()
+            logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
+            logits = logits.squeeze()
+            loss = F.mse_loss(logits, b_labels.view(-1).float(), reduction='sum') / args.batch_size
+
+            loss.backward()
+            optimizer.step()
+
+            return loss.item()
+    else:
+        raise ValueError(f"train_multitask::Unknown task: {task}")
 
 def train_multitask(args):
     '''Train MultitaskBERT.
@@ -242,10 +309,9 @@ def train_multitask(args):
     sts_train_data = SentencePairDataset(sts_train_data, args)
     sts_dev_data = SentencePairDataset(sts_dev_data, args, isRegression=True)
 
-    #TODO(anksood): Hardcode batch size for STS to 8 for now
-    sts_train_dataloader = DataLoader(sts_train_data, shuffle=True, batch_size=8,
+    sts_train_dataloader = DataLoader(sts_train_data, shuffle=True, batch_size=args.batch_size,
                                         collate_fn=sts_train_data.collate_fn)
-    sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=8,
+    sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=args.batch_size,
                                     collate_fn=sts_dev_data.collate_fn)
 
 
@@ -271,9 +337,8 @@ def train_multitask(args):
     optimizer = AdamW(model.parameters(), lr=lr)
     best_dev_acc = 0
 
-    # TODO(anksood): Add a class to track task metrics instead of task_counter
-    # Task counter dictionary
-    task_counter = {"sst": 0, "para": 0, "sts": 0}
+    # Create a task scheduler to determine which tasks to train on
+    scheduler = TaskScheduler(args, ["sst", "para", "sts"], [sst_train_dataloader.__len__(), para_train_dataloader.__len__(), sts_train_dataloader.__len__()])
 
     # Run for the specified number of epochs.
     for epoch in range(args.epochs):
@@ -281,86 +346,28 @@ def train_multitask(args):
         train_loss = 0
         num_batches = 0
 
-        # Pick a random task to train on if task is not forced via input args
-        task = None
-        if(args.force_task != ""):
-            print(f"Training on a forced task: {args.force_task}")
-            task = args.force_task
-        else:
-            print("Training on a random task per epoch")
-            task = random.choice(list(training_data_loaders.keys()))
+        scheduler.step_epoch()
+        
+        if args.scheduling_mode == 'epoch':
+            print("Using epoch scheduling mode")
+            task = scheduler.get_next_task()
+            scheduler.print_task_distribution()
+            data_loader = training_data_loaders[task]
 
-        data_loader = training_data_loaders[task]
-
-        for batch in tqdm(data_loader, desc=f'{task}-train-{epoch}', disable=TQDM_DISABLE):
-
-            if task == "sst":
-                b_ids, b_mask, b_labels = (batch['token_ids'],
-                                        batch['attention_mask'], batch['labels'])
-
-                b_ids = b_ids.to(device)
-                b_mask = b_mask.to(device)
-                b_labels = b_labels.to(device)
-
-                optimizer.zero_grad()
-                logits = model.predict_sentiment(b_ids, b_mask)
-                loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / args.batch_size
-
-                loss.backward()
-                optimizer.step()
-
-                train_loss += loss.item()
-            elif task == "para":
-                (b_ids1, b_mask1,
-                b_ids2, b_mask2,
-                b_labels, b_sent_ids) = (batch['token_ids_1'], batch['attention_mask_1'],
-                            batch['token_ids_2'], batch['attention_mask_2'],
-                            batch['labels'], batch['sent_ids'])
-
-                b_ids1 = b_ids1.to(device)
-                b_mask1 = b_mask1.to(device)
-                b_ids2 = b_ids2.to(device)
-                b_mask2 = b_mask2.to(device)
-                b_labels = b_labels.to(device)
-
-                optimizer.zero_grad()
-                logits = model.predict_paraphrase(b_ids1, b_mask1, b_ids2, b_mask2)
-                loss = F.binary_cross_entropy_with_logits(logits.view(-1), b_labels.view(-1).float(), reduction='sum') / args.batch_size
-
-                loss.backward()
-                optimizer.step()
-
-                train_loss += loss.item()
-            elif task == "sts":
-                for _ in range(STS_TRAINING_SCALING_FACTOR):
-                    (b_ids1, b_mask1,
-                    b_ids2, b_mask2,
-                    b_labels, b_sent_ids) = (batch['token_ids_1'], batch['attention_mask_1'],
-                                batch['token_ids_2'], batch['attention_mask_2'],
-                                batch['labels'], batch['sent_ids'])
-
-                    b_ids1 = b_ids1.to(device)
-                    b_mask1 = b_mask1.to(device)
-                    b_ids2 = b_ids2.to(device)
-                    b_mask2 = b_mask2.to(device)
-                    b_labels = b_labels.to(device)
-
-                    optimizer.zero_grad()
-                    logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
-                    logits = logits.squeeze()
-                    loss = F.mse_loss(logits, b_labels.view(-1).float(), reduction='sum') / args.batch_size
-
-                    loss.backward()
-                    optimizer.step()
-
-                    train_loss += loss.item()
-            else:
-                raise ValueError(f"train_multitask::Unknown task: {task}")
-
-            num_batches += 1
+            for batch in tqdm(data_loader, desc=f'{task}-train-{epoch}', disable=TQDM_DISABLE):
+                train_loss += process_batch(task, batch, device, model, optimizer, args)
+                num_batches += 1
+        elif args.scheduling_mode == 'batch':
+            assert args.num_batches_per_epoch > 0, "Number of batches per epoch must be greater than 0"
+            print("Using batch scheduling mode")
+            num_batches = args.num_batches_per_epoch
+            for batch in tqdm(range(args.num_batches_per_epoch), desc=f'train-{epoch}', disable=TQDM_DISABLE):
+                task = scheduler.get_next_task()
+                data_loader = training_data_loaders[task]
+                train_loss += process_batch(task, next(iter(data_loader)), device, model, optimizer, args)
+            scheduler.print_task_distribution()
 
         train_loss = train_loss / (num_batches)
-        task_counter[task] += 1
 
         if (epoch + 1) % args.eval_epochs == 0:
             dev_sentiment_accuracy, _, _, \
@@ -377,10 +384,9 @@ def train_multitask(args):
                 print("New Best Model!")
 
             print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, dev acc sentiment:: {dev_sentiment_accuracy :.3f}, dev acc paraphrase :: {dev_paraphrase_accuracy :.3f}, dev acc sts :: {dev_sts_corr :.3f},")
-
+    
     # TODO(anksood): Calculate metrics for each task
     print(f"Task Counter: {task_counter}")
-
 
 def test_multitask(args):
     '''Test and save predictions on the dev and test sets of all three tasks.'''
@@ -494,7 +500,7 @@ def get_args():
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--fine-tune-mode", type=str,
                         help='last-linear-layer: the BERT parameters are frozen and the task specific head parameters are updated; full-model: BERT parameters are updated as well',
-                        choices=('last-linear-layer', 'full-model'), default="last-linear-layer")
+                        choices=('last-linear-layer', 'full-model'), default="full-model")
     parser.add_argument("--use_gpu", action='store_true')
 
     parser.add_argument("--sst_dev_out", type=str, default="predictions/sst-dev-output.csv")
@@ -511,9 +517,13 @@ def get_args():
     parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
 
     # Custom arguments
-    parser.add_argument("--force_task", type=str, default="", help="Force the task to train on (sst, para, sts)")
     parser.add_argument("--testOnly", action='store_true', help="Only run test on existing model")
+    parser.add_argument("--force_task", type=str, choices=('', 'sst', 'para', 'sts'), default="", help="Force the task to train on (sst, para, sts)")
+    parser.add_argument("--scheduling_policy", type=str, choices=('random', 'round-robin', 'annealed-sampling'), default="round-robin", help="Scheduling policy for task selection")
+    parser.add_argument("--scheduling_mode", type=str, choices=('epoch', 'batch'), default='epoch', help="Scheduling mode for task selection (single task per epoch or per batch)")
+    parser.add_argument("--num_batches_per_epoch", type=int, default=0, help="Number of batches per epoch (used by batch scheduling mode)")
     parser.add_argument("--eval_epochs", type=int, default=1, help="Run evaluation on dev set every eval_epochs")
+
 
     args = parser.parse_args()
     return args
