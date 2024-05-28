@@ -385,8 +385,6 @@ def train_multitask(args):
 
             print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, dev acc sentiment:: {dev_sentiment_accuracy :.3f}, dev acc paraphrase :: {dev_paraphrase_accuracy :.3f}, dev acc sts :: {dev_sts_corr :.3f},")
     
-    # TODO(anksood): Calculate metrics for each task
-    print(f"Task Counter: {task_counter}")
 
 def test_multitask(args):
     '''Test and save predictions on the dev and test sets of all three tasks.'''
