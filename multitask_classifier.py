@@ -24,6 +24,7 @@ from bert import BertModel
 from optimizer import AdamW
 from tqdm import tqdm
 from torch.cuda.amp import GradScaler, autocast
+from torch.utils.tensorboard import SummaryWriter
 
 from datasets import (
     SentenceClassificationDataset,
@@ -65,6 +66,8 @@ BERT_HIDDEN_SIZE = 768
 N_SENTIMENT_CLASSES = 5
 
 scaler = GradScaler()
+
+writer = SummaryWriter('logs/multitask')
 
 class MultitaskBERT(nn.Module):
     '''
@@ -382,6 +385,7 @@ def train_multitask(args):
     for epoch in range(args.epochs):
         model.train()
         train_loss = 0
+        step_loss = 0
         num_batches = 0
 
         scheduler.step_epoch()
@@ -393,7 +397,8 @@ def train_multitask(args):
             data_loader = training_data_loaders[task]
 
             for batch in tqdm(data_loader, desc=f'{task}-train-{epoch}', disable=TQDM_DISABLE):
-                train_loss += process_batch(task, batch, device, model, optimizer, args)
+                step_loss = process_batch(task, batch, device, model, optimizer, args)
+                train_loss += step_loss
                 num_batches += 1
         elif args.scheduling_mode == 'batch':
             assert args.num_batches_per_epoch > 0, "Number of batches per epoch must be greater than 0"
@@ -402,10 +407,13 @@ def train_multitask(args):
             for batch in tqdm(range(args.num_batches_per_epoch), desc=f'train-{epoch}', disable=TQDM_DISABLE):
                 task = scheduler.get_next_task()
                 data_loader = training_data_loaders[task]
-                train_loss += process_batch(task, next(iter(data_loader)), device, model, optimizer, args)
+                step_loss = process_batch(task, next(iter(data_loader)), device, model, optimizer, args)
+                train_loss += step_loss
             scheduler.print_task_distribution()
 
         train_loss = train_loss / (num_batches)
+        writer.add_scalar('Loss/step', step_loss, epoch)
+        writer.add_scalar('Loss/train', train_loss, epoch)
 
         if (epoch + 1) % args.eval_epochs == 0:
             dev_sentiment_accuracy, _, _, \
@@ -415,6 +423,10 @@ def train_multitask(args):
                                                     sts_dev_dataloader, model, device)
 
             total_accuracy = (dev_sentiment_accuracy + dev_paraphrase_accuracy + dev_sts_corr)/3
+            writer.add_scalar('Accuracy/sst', dev_sentiment_accuracy, epoch)
+            writer.add_scalar('Accuracy/para', dev_paraphrase_accuracy, epoch)
+            writer.add_scalar('Accuracy/sts', dev_sts_corr, epoch)
+            writer.add_scalar('Accuracy/total', total_accuracy, epoch)
 
             if total_accuracy > best_dev_acc:
                 best_dev_acc = total_accuracy
@@ -578,3 +590,5 @@ if __name__ == "__main__":
         print("Skipping training and running test only!")
 
     test_multitask(args)
+
+    writer.close()
