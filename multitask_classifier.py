@@ -25,6 +25,7 @@ from optimizer import AdamW
 from tqdm import tqdm
 from torch.cuda.amp import GradScaler, autocast
 from torch.utils.tensorboard import SummaryWriter
+import datetime
 
 from datasets import (
     SentenceClassificationDataset,
@@ -67,7 +68,8 @@ N_SENTIMENT_CLASSES = 5
 
 scaler = GradScaler()
 
-writer = SummaryWriter('logs/multitask')
+# Summary Writer global object
+writer = None
 
 class MultitaskBERT(nn.Module):
     '''
@@ -412,8 +414,7 @@ def train_multitask(args):
             scheduler.print_task_distribution()
 
         train_loss = train_loss / (num_batches)
-        writer.add_scalar('Loss/step', step_loss, epoch)
-        writer.add_scalar('Loss/train', train_loss, epoch)
+        writer.add_scalars('Loss', {'train': train_loss, 'step': step_loss}, epoch)
 
         if (epoch + 1) % args.eval_epochs == 0:
             dev_sentiment_accuracy, _, _, \
@@ -423,10 +424,7 @@ def train_multitask(args):
                                                     sts_dev_dataloader, model, device)
 
             total_accuracy = (dev_sentiment_accuracy + dev_paraphrase_accuracy + dev_sts_corr)/3
-            writer.add_scalar('Accuracy/sst', dev_sentiment_accuracy, epoch)
-            writer.add_scalar('Accuracy/para', dev_paraphrase_accuracy, epoch)
-            writer.add_scalar('Accuracy/sts', dev_sts_corr, epoch)
-            writer.add_scalar('Accuracy/total', total_accuracy, epoch)
+            writer.add_scalars('Accuracy', {'sst': dev_sentiment_accuracy, 'para': dev_paraphrase_accuracy, 'sts': dev_sts_corr, 'total': total_accuracy}, epoch)
 
             if total_accuracy > best_dev_acc:
                 best_dev_acc = total_accuracy
@@ -583,6 +581,9 @@ if __name__ == "__main__":
     args = get_args()
     args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
     seed_everything(args.seed)  # Fix the seed for reproducibility.
+    dateStr = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    writerName = f'logs/{dateStr}-{args.fine_tune_mode}-{args.epochs}-{args.lr}-{args.scheduling_policy}-{args.batch_size}'
+    writer = SummaryWriter(writerName)
 
     if(not args.testOnly):
         train_multitask(args)
