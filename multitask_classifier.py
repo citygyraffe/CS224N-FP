@@ -32,10 +32,11 @@ from datasets import (
     load_multitask_data
 )
 
+from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_multitask
+
 # Custom imports
 from task_scheduler import TaskScheduler
-
-from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_multitask
+from bert_parallel_adaption_layers import BertModelWithParallelAdaption
 
 # ADDED INCLUDES
 from tokenizer import BertTokenizer
@@ -72,7 +73,15 @@ class MultitaskBERT(nn.Module):
     '''
     def __init__(self, config):
         super(MultitaskBERT, self).__init__()
-        self.bert = BertModel.from_pretrained('bert-base-uncased')
+
+        self.bert = None
+        if args.parallel_adaption_layers == '':
+            print("Using standard BERT model")
+            self.bert = BertModel.from_pretrained('bert-base-uncased')
+        else:
+            print(f"Using BERT model with parallel adaption layers: {args.parallel_adaption_layers}")
+            self.bert = BertModelWithParallelAdaption.from_pretrained('bert-base-uncased', args=args)
+        
         # last-linear-layer mode does not require updating BERT paramters.
         assert config.fine_tune_mode in ["last-linear-layer", "full-model"]
         print(f"Fine-tune mode: {config.fine_tune_mode}")
@@ -103,7 +112,7 @@ class MultitaskBERT(nn.Module):
         self.similarity_classifier = torch.nn.Linear(config.hidden_size, 1)
 
 
-    def forward(self, input_ids, attention_mask):
+    def forward(self, input_ids, attention_mask, task):
         'Takes a batch of sentences and produces embeddings for them.'
         # The final BERT embedding is the hidden state of [CLS] token (the first token)
         # Here, you can start by just returning the embeddings straight from BERT.
@@ -111,7 +120,11 @@ class MultitaskBERT(nn.Module):
         # (e.g., by adding other layers).
 
         # Retrieve BERT outputs
-        outputs = self.bert(input_ids, attention_mask)
+        outputs = None
+        if args.parallel_adaption_layers != '':
+            outputs = self.bert(input_ids, attention_mask, task=task)
+        else:
+            outputs = self.bert(input_ids, attention_mask)
         # Fetch pooled output (pooled representation of each sentence)
         pooled_output = outputs['pooler_output']
         return pooled_output
@@ -124,7 +137,7 @@ class MultitaskBERT(nn.Module):
         Thus, your output should contain 5 logits for each sentence.
         '''
         ### TODO
-        pooled_output = self.forward(input_ids, attention_mask)
+        pooled_output = self.forward(input_ids, attention_mask, 0)
         pooled_output = self.sentiment_dropout(pooled_output)
         logits = self.sentiment_classifier(pooled_output)
         return logits
@@ -158,7 +171,7 @@ class MultitaskBERT(nn.Module):
         # ADD ATTENTION MASKS
         attentions = torch.cat((attention_mask_1, torch.ones_like(self.seperator_tokens), attention_mask_2), dim=1)
 
-        pooled_output = self.forward(inputs, attentions)
+        pooled_output = self.forward(inputs, attentions, 1)
         pooled_output = self.paraphrase_dropout(pooled_output)
         logit = self.paraphrase_classifier(pooled_output)
         return logit
@@ -191,7 +204,7 @@ class MultitaskBERT(nn.Module):
         # ADD ATTENTION MASKS
         attentions = torch.cat((attention_mask_1, torch.ones_like(self.seperator_tokens), attention_mask_2), dim=1)
 
-        pooled_output = self.forward(inputs, attentions)
+        pooled_output = self.forward(inputs, attentions, 2)
         pooled_output = self.similarity_dropout(pooled_output)
         logit = self.similarity_classifier(pooled_output)
         return logit
@@ -531,7 +544,7 @@ def get_args():
     parser.add_argument("--scheduling_mode", type=str, choices=('epoch', 'batch'), default='epoch', help="Scheduling mode for task selection (single task per epoch or per batch)")
     parser.add_argument("--num_batches_per_epoch", type=int, default=0, help="Number of batches per epoch (used by batch scheduling mode)")
     parser.add_argument("--eval_epochs", type=int, default=1, help="Run evaluation on dev set every eval_epochs")
-
+    parser.add_argument("--parallel_adaption_layers", type=str, default="", choices=('low-rank', 'pals'), help="Use parallel adaption layers for BERT")
 
     args = parser.parse_args()
     return args
