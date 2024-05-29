@@ -125,22 +125,22 @@ class MultitaskBERT(nn.Module):
                 # Add lora layers to all of the self attention components
                 # for param in layer.self_attention.parameters():
                 #     param.requires_grad = False
-                layer.self_attention.query = LinearWithLoRALayer(layer.self_attention.query, config.lora_rank, 1)
-                layer.self_attention.key = LinearWithLoRALayer(layer.self_attention.key, config.lora_rank, 1)
-                layer.self_attention.value = LinearWithLoRALayer(layer.self_attention.value, config.lora_rank, 1)
+                layer.self_attention.query = LinearWithLoRALayer(layer.self_attention.query, config.lora_rank, config.lora_alpha)
+                layer.self_attention.key = LinearWithLoRALayer(layer.self_attention.key, config.lora_rank, config.lora_alpha)
+                layer.self_attention.value = LinearWithLoRALayer(layer.self_attention.value, config.lora_rank, config.lora_alpha)
 
                 # Add lora layers to feed forward components
                 # for param in layer.interm_dense.parameters():
                 #     param.requires_grad = False
-                layer.interm_dense = LinearWithLoRALayer(layer.interm_dense, config.lora_rank, 1)
+                layer.interm_dense = LinearWithLoRALayer(layer.interm_dense, config.lora_rank, config.lora_alpha)
 
                 # for param in layer.out_dense.parameters():
                 #     param.requires_grad = False
-                layer.out_dense = LinearWithLoRALayer(layer.out_dense, config.lora_rank, 1)
+                layer.out_dense = LinearWithLoRALayer(layer.out_dense, config.lora_rank, config.lora_alpha)
 
-            self.sentiment_classifier = LinearWithLoRALayer(self.sentiment_classifier, config.lora_rank, 1)
-            self.similarity_classifier = LinearWithLoRALayer(self.similarity_classifier, config.lora_rank, 1)
-            self.paraphrase_classifier = LinearWithLoRALayer(self.paraphrase_classifier, config.lora_rank, 1)
+            self.sentiment_classifier = LinearWithLoRALayer(self.sentiment_classifier, config.lora_rank, config.lora_alpha)
+            self.similarity_classifier = LinearWithLoRALayer(self.similarity_classifier, config.lora_rank, config.lora_alpha)
+            self.paraphrase_classifier = LinearWithLoRALayer(self.paraphrase_classifier, config.lora_rank, config.lora_alpha)
 
 
     def forward(self, input_ids, attention_mask):
@@ -363,7 +363,8 @@ def train_multitask(args):
               'data_dir': '.',
               'fine_tune_mode': args.fine_tune_mode,
               'lora': args.lora,
-              'lora_rank': args.lora_rank}
+              'lora_rank': args.lora_rank,
+              'lora_alpha': args.lora_alpha}
 
     config = SimpleNamespace(**config)
 
@@ -414,7 +415,8 @@ def train_multitask(args):
             scheduler.print_task_distribution()
 
         train_loss = train_loss / (num_batches)
-        writer.add_scalars('Loss', {'train': train_loss, 'step': step_loss}, epoch)
+        writer.add_scalar('loss/train', train_loss, epoch)
+        writer.add_scalar('loss/step', step_loss, epoch)
 
         if (epoch + 1) % args.eval_epochs == 0:
             dev_sentiment_accuracy, _, _, \
@@ -424,7 +426,10 @@ def train_multitask(args):
                                                     sts_dev_dataloader, model, device)
 
             total_accuracy = (dev_sentiment_accuracy + dev_paraphrase_accuracy + dev_sts_corr)/3
-            writer.add_scalars('Accuracy', {'sst': dev_sentiment_accuracy, 'para': dev_paraphrase_accuracy, 'sts': dev_sts_corr, 'total': total_accuracy}, epoch)
+            writer.add_scalar('accuracy/sst', dev_sentiment_accuracy, epoch)
+            writer.add_scalar('accuracy/para', dev_paraphrase_accuracy, epoch)
+            writer.add_scalar('accuracy/sts', dev_sts_corr, epoch)
+            writer.add_scalar('accuracy/total', total_accuracy, epoch)
 
             if total_accuracy > best_dev_acc:
                 best_dev_acc = total_accuracy
@@ -572,6 +577,7 @@ def get_args():
     # Arguments for LoRA finetuning
     parser.add_argument("--lora", action='store_true', default=False, help="Use LoRA for training")
     parser.add_argument("--lora_rank", type=int, default=0, help="Rank of LoRA matrix. 0 to skip LoRA")
+    parser.add_argument("--lora_alpha", type=float, default=2.0, help="Alpha value for LoRA")
 
     args = parser.parse_args()
     return args
@@ -582,8 +588,22 @@ if __name__ == "__main__":
     args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
     seed_everything(args.seed)  # Fix the seed for reproducibility.
     dateStr = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    writerName = f'logs/{dateStr}-{args.fine_tune_mode}-{args.epochs}-{args.lr}-{args.scheduling_policy}-{args.batch_size}'
+    loraStr = f'lora_r{args.lora_rank}' if args.lora else "no-lora"
+    writerName = f'logs/{dateStr}-{args.fine_tune_mode}-{args.epochs}-{args.lr}-{args.scheduling_policy}-{args.batch_size}-{loraStr}'
+    # Write all args to args.txt
+    layout = {
+        "multitask": {
+            "loss": ["Multiline", ["loss/train", "loss/step"]],
+            "accuracy": ["Multiline", ["accuracy/sst", "accuracy/para", "accuracy/sts", "accuracy/total"]],
+        },
+    }
     writer = SummaryWriter(writerName)
+    writer.add_custom_scalars(layout)
+
+    # Save all arguments to a file
+    with open(f'{writerName}/args.txt', 'w') as f:
+        for arg in vars(args):
+            f.write(f"{arg}: {getattr(args, arg)}\n")
 
     if(not args.testOnly):
         train_multitask(args)

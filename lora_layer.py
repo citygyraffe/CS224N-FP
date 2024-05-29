@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 class LoRALayer(torch.nn.Module):
-    def __init__(self, dim_input, dim_output, rank=4, alpha=1.0):
+    def __init__(self, dim_input, dim_output, rank=4, alpha=2.0):
         super().__init__()
 
         std_dev = 1 / torch.sqrt(torch.tensor(rank).float())
@@ -13,9 +13,6 @@ class LoRALayer(torch.nn.Module):
         self.alpha = alpha
 
     def forward(self, x):
-        # x = torch.matmul(x, self.A)
-        # x = torch.matmul(x, self.B)
-        # x = self.alpha * x
         x = self.alpha * (x @ self.A @ self.B)
         return x
 
