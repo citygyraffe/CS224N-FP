@@ -34,14 +34,13 @@ from datasets import (
 
 from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_multitask
 
+TQDM_DISABLE=False
+
 # Custom imports
+from tokenizer import BertTokenizer
 from task_scheduler import TaskScheduler
 from bert_parallel_adaption_layers import BertModelWithParallelAdaption
-
-# ADDED INCLUDES
-from tokenizer import BertTokenizer
-
-TQDM_DISABLE=False
+from custom_utils import time_function
 
 # CUSTOM SETTINGS
 DEBUG_OUTPUT = False
@@ -295,6 +294,7 @@ class BatchProcessor:
         else:
             raise ValueError(f"train_multitask::Unknown task: {task}")
 
+@time_function
 def train_multitask(args):
     '''Train MultitaskBERT.
 
