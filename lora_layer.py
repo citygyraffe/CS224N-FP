@@ -13,16 +13,18 @@ class LoRALayer(torch.nn.Module):
         self.alpha = alpha
 
     def forward(self, x):
-        x = torch.matmul(x, self.A)
-        x = torch.matmul(x, self.B)
-        x = self.alpha * x
-        # x = self.alpha * (x @ self.A @ self.B)
+        # x = torch.matmul(x, self.A)
+        # x = torch.matmul(x, self.B)
+        # x = self.alpha * x
+        x = self.alpha * (x @ self.A @ self.B)
         return x
 
 class LinearWithLoRALayer(torch.nn.Module):
-    def __init__(self, linear_layer, rank, alpha):
+    def __init__(self, linear_layer : nn.Linear, rank, alpha):
         super().__init__()
-        self.linear_layer = linear_layer # nn.Linear
+        self.linear_layer = linear_layer
+        for param in self.linear_layer.parameters():
+            param.requires_grad = False # Freeze the original linear layer
         self.lora = LoRALayer(linear_layer.in_features, linear_layer.out_features, rank, alpha)
 
     def forward(self, x):

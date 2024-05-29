@@ -23,6 +23,7 @@ from torch.utils.data import DataLoader
 from bert import BertModel
 from optimizer import AdamW
 from tqdm import tqdm
+from torch.cuda.amp import GradScaler, autocast
 
 from datasets import (
     SentenceClassificationDataset,
@@ -46,7 +47,7 @@ TQDM_DISABLE=False
 
 # CUSTOM SETTINGS
 DEBUG_OUTPUT = False
-USE_COMBINED_SST_DATASET = True
+USE_COMBINED_SST_DATASET = False
 STS_TRAINING_SCALING_FACTOR = 1
 
 # Fix the random seed.
@@ -63,6 +64,7 @@ def seed_everything(seed=11711):
 BERT_HIDDEN_SIZE = 768
 N_SENTIMENT_CLASSES = 5
 
+scaler = GradScaler()
 
 class MultitaskBERT(nn.Module):
     '''
@@ -84,24 +86,6 @@ class MultitaskBERT(nn.Module):
             elif config.fine_tune_mode == 'full-model':
                 param.requires_grad = True
 
-        # Add a LoRA layer to linear layers in the self-attention components
-        # by replacing the default linear laryer with a LinearWithLoRALayer
-        # Disable gradient updates for BERT parameters if using LoRA so that
-        # only LoRA parameters will be updated for better efficiency
-        if config.lora:
-            print("Using LoRA in BERT layers")
-            for param in self.bert.bert_layers.parameters():
-                param.requires_grad = False # Freeze the original BERT layers
-            for layer in self.bert.bert_layers:
-                # Add lora layers to all of the self attention components
-                layer.self_attention.query = LinearWithLoRALayer(layer.self_attention.query, config.lora_rank, 1)
-                # layer.self_attention.key = LinearWithLoRALayer(layer.self_attention.key, config.lora_rank, 1)
-                layer.self_attention.value = LinearWithLoRALayer(layer.self_attention.value, config.lora_rank, 1)
-                # Add lora layers to feed forward components
-                layer.interm_dense = LinearWithLoRALayer(layer.interm_dense, config.lora_rank, 1)
-                layer.out_dense = LinearWithLoRALayer(layer.out_dense, config.lora_rank, 1)
-
-
         # You will want to add layers here to perform the downstream tasks.
         ### TODO
         if DEBUG_OUTPUT:
@@ -122,6 +106,36 @@ class MultitaskBERT(nn.Module):
         # Semantical similarity
         self.similarity_dropout = torch.nn.Dropout(config.hidden_dropout_prob)
         self.similarity_classifier = torch.nn.Linear(config.hidden_size, 1)
+
+         # Add a LoRA layer to linear layers in the self-attention components
+        # by replacing the default linear laryer with a LinearWithLoRALayer
+        # Disable gradient updates for BERT parameters if using LoRA so that
+        # only LoRA parameters will be updated for better efficiency
+        if config.lora:
+            print("Using LoRA in BERT layers")
+            # for param in self.bert.bert_layers.parameters():
+            #     param.requires_grad = False # Freeze the original BERT layers
+            for layer in self.bert.bert_layers:
+
+                # Add lora layers to all of the self attention components
+                # for param in layer.self_attention.parameters():
+                #     param.requires_grad = False
+                layer.self_attention.query = LinearWithLoRALayer(layer.self_attention.query, config.lora_rank, 1)
+                layer.self_attention.key = LinearWithLoRALayer(layer.self_attention.key, config.lora_rank, 1)
+                layer.self_attention.value = LinearWithLoRALayer(layer.self_attention.value, config.lora_rank, 1)
+
+                # Add lora layers to feed forward components
+                # for param in layer.interm_dense.parameters():
+                #     param.requires_grad = False
+                layer.interm_dense = LinearWithLoRALayer(layer.interm_dense, config.lora_rank, 1)
+
+                # for param in layer.out_dense.parameters():
+                #     param.requires_grad = False
+                layer.out_dense = LinearWithLoRALayer(layer.out_dense, config.lora_rank, 1)
+
+            self.sentiment_classifier = LinearWithLoRALayer(self.sentiment_classifier, config.lora_rank, 1)
+            self.similarity_classifier = LinearWithLoRALayer(self.similarity_classifier, config.lora_rank, 1)
+            self.paraphrase_classifier = LinearWithLoRALayer(self.paraphrase_classifier, config.lora_rank, 1)
 
 
     def forward(self, input_ids, attention_mask):
@@ -233,67 +247,62 @@ def save_model(model, optimizer, args, config, filepath):
 
 def process_batch(task, batch, device, model, optimizer, args):
     if task == "sst":
-        b_ids, b_mask, b_labels = (batch['token_ids'],
-                                batch['attention_mask'], batch['labels'])
-
-        b_ids = b_ids.to(device)
-        b_mask = b_mask.to(device)
-        b_labels = b_labels.to(device)
+        b_ids, b_mask, b_labels = batch['token_ids'].to(device), batch['attention_mask'].to(device), batch['labels'].to(device)
 
         optimizer.zero_grad()
-        logits = model.predict_sentiment(b_ids, b_mask)
-        loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / args.batch_size
 
-        loss.backward()
-        optimizer.step()
+        # Use autocast to enable mixed precision
+        with autocast():
+            logits = model.predict_sentiment(b_ids, b_mask)
+            loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / args.batch_size
 
-        return loss.item()
+        # Scale the loss and perform backward pass
+        scaler.scale(loss).backward()
+
+        # Unscale the gradients and step the optimizer
+        scaler.unscale_(optimizer)
+        scaler.step(optimizer)
+
+        # Update the scale for next iteration
+        scaler.update()
+
     elif task == "para":
-        (b_ids1, b_mask1,
-        b_ids2, b_mask2,
-        b_labels, b_sent_ids) = (batch['token_ids_1'], batch['attention_mask_1'],
-                    batch['token_ids_2'], batch['attention_mask_2'],
-                    batch['labels'], batch['sent_ids'])
-
-        b_ids1 = b_ids1.to(device)
-        b_mask1 = b_mask1.to(device)
-        b_ids2 = b_ids2.to(device)
-        b_mask2 = b_mask2.to(device)
-        b_labels = b_labels.to(device)
+        b_ids1, b_mask1 = batch['token_ids_1'].to(device), batch['attention_mask_1'].to(device)
+        b_ids2, b_mask2 = batch['token_ids_2'].to(device), batch['attention_mask_2'].to(device)
+        b_labels = batch['labels'].to(device)
 
         optimizer.zero_grad()
-        logits = model.predict_paraphrase(b_ids1, b_mask1, b_ids2, b_mask2)
-        loss = F.binary_cross_entropy_with_logits(logits.view(-1), b_labels.view(-1).float(), reduction='sum') / args.batch_size
 
-        loss.backward()
-        optimizer.step()
+        with autocast():
+            logits = model.predict_paraphrase(b_ids1, b_mask1, b_ids2, b_mask2)
+            loss = F.binary_cross_entropy_with_logits(logits.view(-1), b_labels.view(-1).float(), reduction='sum') / args.batch_size
 
-        return loss.item()
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        scaler.step(optimizer)
+        scaler.update()
+
     elif task == "sts":
-        for _ in range(STS_TRAINING_SCALING_FACTOR):
-            (b_ids1, b_mask1,
-            b_ids2, b_mask2,
-            b_labels, b_sent_ids) = (batch['token_ids_1'], batch['attention_mask_1'],
-                        batch['token_ids_2'], batch['attention_mask_2'],
-                        batch['labels'], batch['sent_ids'])
+        b_ids1, b_mask1 = batch['token_ids_1'].to(device), batch['attention_mask_1'].to(device)
+        b_ids2, b_mask2 = batch['token_ids_2'].to(device), batch['attention_mask_2'].to(device)
+        b_labels = batch['labels'].to(device)
 
-            b_ids1 = b_ids1.to(device)
-            b_mask1 = b_mask1.to(device)
-            b_ids2 = b_ids2.to(device)
-            b_mask2 = b_mask2.to(device)
-            b_labels = b_labels.to(device)
+        optimizer.zero_grad()
 
-            optimizer.zero_grad()
-            logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
-            logits = logits.squeeze()
+        with autocast():
+            logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2).squeeze()
             loss = F.mse_loss(logits, b_labels.view(-1).float(), reduction='sum') / args.batch_size
 
-            loss.backward()
-            optimizer.step()
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        scaler.step(optimizer)
+        scaler.update()
 
-            return loss.item()
     else:
         raise ValueError(f"train_multitask::Unknown task: {task}")
+
+    return loss.item()
+
 
 def train_multitask(args):
     '''Train MultitaskBERT.
@@ -313,9 +322,9 @@ def train_multitask(args):
     sst_dev_data = SentenceClassificationDataset(sst_dev_data, args)
 
     sst_train_dataloader = DataLoader(sst_train_data, shuffle=True, batch_size=args.batch_size,
-                                      collate_fn=sst_train_data.collate_fn)
+                                      collate_fn=sst_train_data.collate_fn, pin_memory=True)
     sst_dev_dataloader = DataLoader(sst_dev_data, shuffle=False, batch_size=args.batch_size,
-                                    collate_fn=sst_dev_data.collate_fn)
+                                    collate_fn=sst_dev_data.collate_fn, pin_memory=True)
 
     # Paraphrase data:
     para_train_data = SentencePairDataset(para_train_data, args)
