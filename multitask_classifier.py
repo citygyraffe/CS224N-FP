@@ -23,6 +23,9 @@ from torch.utils.data import DataLoader
 from bert import BertModel
 from optimizer import AdamW
 from tqdm import tqdm
+from torch.cuda.amp import GradScaler, autocast
+from torch.utils.tensorboard import SummaryWriter
+import datetime
 
 from datasets import (
     SentenceClassificationDataset,
@@ -39,6 +42,8 @@ from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_mul
 
 # ADDED INCLUDES
 from tokenizer import BertTokenizer
+from lora_layer import LoRALayer, LinearWithLoRALayer
+
 
 TQDM_DISABLE=False
 
@@ -61,6 +66,10 @@ def seed_everything(seed=11711):
 BERT_HIDDEN_SIZE = 768
 N_SENTIMENT_CLASSES = 5
 
+scaler = GradScaler()
+
+# Summary Writer global object
+writer = None
 
 class MultitaskBERT(nn.Module):
     '''
@@ -81,6 +90,7 @@ class MultitaskBERT(nn.Module):
                 param.requires_grad = False
             elif config.fine_tune_mode == 'full-model':
                 param.requires_grad = True
+
         # You will want to add layers here to perform the downstream tasks.
         ### TODO
         if DEBUG_OUTPUT:
@@ -101,6 +111,36 @@ class MultitaskBERT(nn.Module):
         # Semantical similarity
         self.similarity_dropout = torch.nn.Dropout(config.hidden_dropout_prob)
         self.similarity_classifier = torch.nn.Linear(config.hidden_size, 1)
+
+         # Add a LoRA layer to linear layers in the self-attention components
+        # by replacing the default linear laryer with a LinearWithLoRALayer
+        # Disable gradient updates for BERT parameters if using LoRA so that
+        # only LoRA parameters will be updated for better efficiency
+        if config.lora:
+            print("Using LoRA in BERT layers")
+            # for param in self.bert.bert_layers.parameters():
+            #     param.requires_grad = False # Freeze the original BERT layers
+            for layer in self.bert.bert_layers:
+
+                # Add lora layers to all of the self attention components
+                # for param in layer.self_attention.parameters():
+                #     param.requires_grad = False
+                layer.self_attention.query = LinearWithLoRALayer(layer.self_attention.query, config.lora_rank, config.lora_alpha)
+                layer.self_attention.key = LinearWithLoRALayer(layer.self_attention.key, config.lora_rank, config.lora_alpha)
+                layer.self_attention.value = LinearWithLoRALayer(layer.self_attention.value, config.lora_rank, config.lora_alpha)
+
+                # Add lora layers to feed forward components
+                # for param in layer.interm_dense.parameters():
+                #     param.requires_grad = False
+                layer.interm_dense = LinearWithLoRALayer(layer.interm_dense, config.lora_rank, config.lora_alpha)
+
+                # for param in layer.out_dense.parameters():
+                #     param.requires_grad = False
+                layer.out_dense = LinearWithLoRALayer(layer.out_dense, config.lora_rank, config.lora_alpha)
+
+            self.sentiment_classifier = LinearWithLoRALayer(self.sentiment_classifier, config.lora_rank, config.lora_alpha)
+            self.similarity_classifier = LinearWithLoRALayer(self.similarity_classifier, config.lora_rank, config.lora_alpha)
+            self.paraphrase_classifier = LinearWithLoRALayer(self.paraphrase_classifier, config.lora_rank, config.lora_alpha)
 
 
     def forward(self, input_ids, attention_mask):
@@ -217,70 +257,57 @@ class BatchProcessor:
         self.optimizer = optimizer
         self.args = args
         self.config = config
+        self.scaler = GradScaler()
 
     def process_batch(self, task, batch):
+        self.optimizer.zero_grad()
+
         if task == "sst":
-            b_ids, b_mask, b_labels = (batch['token_ids'],
-                                    batch['attention_mask'], batch['labels'])
+            b_ids, b_mask, b_labels = (batch['token_ids'].to(self.device),
+                                       batch['attention_mask'].to(self.device),
+                                       batch['labels'].to(self.device))
 
-            b_ids = b_ids.to(self.device)
-            b_mask = b_mask.to(self.device)
-            b_labels = b_labels.to(self.device)
+            with autocast():
+                logits = self.model.predict_sentiment(b_ids, b_mask)
+                loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / self.args.batch_size
 
-            self.optimizer.zero_grad()
-            logits = self.model.predict_sentiment(b_ids, b_mask)
-            loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / args.batch_size
-
-            loss.backward()
-            self.optimizer.step()
-
-            return loss.item()
         elif task == "para":
-            (b_ids1, b_mask1,
-            b_ids2, b_mask2,
-            b_labels, b_sent_ids) = (batch['token_ids_1'], batch['attention_mask_1'],
-                        batch['token_ids_2'], batch['attention_mask_2'],
-                        batch['labels'], batch['sent_ids'])
+            b_ids1, b_mask1, b_ids2, b_mask2, b_labels = (
+                batch['token_ids_1'].to(self.device),
+                batch['attention_mask_1'].to(self.device),
+                batch['token_ids_2'].to(self.device),
+                batch['attention_mask_2'].to(self.device),
+                batch['labels'].to(self.device)
+            )
 
-            b_ids1 = b_ids1.to(self.device)
-            b_mask1 = b_mask1.to(self.device)
-            b_ids2 = b_ids2.to(self.device)
-            b_mask2 = b_mask2.to(self.device)
-            b_labels = b_labels.to(self.device)
+            with autocast():
+                logits = self.model.predict_paraphrase(b_ids1, b_mask1, b_ids2, b_mask2)
+                loss = F.binary_cross_entropy_with_logits(logits.view(-1), b_labels.view(-1).float(), reduction='sum') / self.args.batch_size
 
-            self.optimizer.zero_grad()
-            logits = self.model.predict_paraphrase(b_ids1, b_mask1, b_ids2, b_mask2)
-            loss = F.binary_cross_entropy_with_logits(logits.view(-1), b_labels.view(-1).float(), reduction='sum') / args.batch_size
-
-            loss.backward()
-            self.optimizer.step()
-
-            return loss.item()
         elif task == "sts":
             for _ in range(STS_TRAINING_SCALING_FACTOR):
-                (b_ids1, b_mask1,
-                b_ids2, b_mask2,
-                b_labels, b_sent_ids) = (batch['token_ids_1'], batch['attention_mask_1'],
-                            batch['token_ids_2'], batch['attention_mask_2'],
-                            batch['labels'], batch['sent_ids'])
+                b_ids1, b_mask1, b_ids2, b_mask2, b_labels = (
+                    batch['token_ids_1'].to(self.device),
+                    batch['attention_mask_1'].to(self.device),
+                    batch['token_ids_2'].to(self.device),
+                    batch['attention_mask_2'].to(self.device),
+                    batch['labels'].to(self.device)
+                )
 
-                b_ids1 = b_ids1.to(self.device)
-                b_mask1 = b_mask1.to(self.device)
-                b_ids2 = b_ids2.to(self.device)
-                b_mask2 = b_mask2.to(self.device)
-                b_labels = b_labels.to(self.device)
+                with autocast():
+                    logits = self.model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2).squeeze()
+                    loss = F.mse_loss(logits, b_labels.view(-1).float(), reduction='sum') / self.args.batch_size
 
-                self.optimizer.zero_grad()
-                logits = self.model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
-                logits = logits.squeeze()
-                loss = F.mse_loss(logits, b_labels.view(-1).float(), reduction='sum') / args.batch_size
-
-                loss.backward()
-                self.optimizer.step()
-
-                return loss.item()
         else:
             raise ValueError(f"train_multitask::Unknown task: {task}")
+
+        self.scaler.scale(loss).backward()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
+
+        return loss.item()
+
+
 
 def train_multitask(args):
     '''Train MultitaskBERT.
@@ -300,9 +327,9 @@ def train_multitask(args):
     sst_dev_data = SentenceClassificationDataset(sst_dev_data, args)
 
     sst_train_dataloader = DataLoader(sst_train_data, shuffle=True, batch_size=args.batch_size,
-                                      collate_fn=sst_train_data.collate_fn)
+                                      collate_fn=sst_train_data.collate_fn, pin_memory=True)
     sst_dev_dataloader = DataLoader(sst_dev_data, shuffle=False, batch_size=args.batch_size,
-                                    collate_fn=sst_dev_data.collate_fn)
+                                    collate_fn=sst_dev_data.collate_fn, pin_memory=True)
 
     # Paraphrase data:
     para_train_data = SentencePairDataset(para_train_data, args)
@@ -334,12 +361,21 @@ def train_multitask(args):
               'num_labels': num_labels,
               'hidden_size': 768,
               'data_dir': '.',
-              'fine_tune_mode': args.fine_tune_mode}
+              'fine_tune_mode': args.fine_tune_mode,
+              'lora': args.lora,
+              'lora_rank': args.lora_rank,
+              'lora_alpha': args.lora_alpha}
 
     config = SimpleNamespace(**config)
 
     model = MultitaskBERT(config)
     model = model.to(device)
+
+    print(model)
+    print(f"Parameters requiring gradient update: {sum(param.numel() for param in model.parameters() if param.requires_grad)}")
+
+    # for name, param in model.named_parameters():
+    #     print(f"{name}: {param.requires_grad}")
 
     lr = args.lr
     optimizer = AdamW(model.parameters(), lr=lr)
@@ -355,10 +391,11 @@ def train_multitask(args):
     for epoch in range(args.epochs):
         model.train()
         train_loss = 0
+        step_loss = 0
         num_batches = 0
 
         scheduler.step_epoch()
-        
+
         if args.scheduling_mode == 'epoch':
             print("Using epoch scheduling mode")
             task = scheduler.get_next_task()
@@ -366,7 +403,8 @@ def train_multitask(args):
             data_loader = training_data_loaders[task]
 
             for batch in tqdm(data_loader, desc=f'{task}-train-{epoch}', disable=TQDM_DISABLE):
-                train_loss += batch_processor.process_batch(task, batch)
+                step_loss = batch_processor.process_batch(task, batch)
+                train_loss += step_loss
                 num_batches += 1
         elif args.scheduling_mode == 'batch':
             assert args.num_batches_per_epoch > 0, "Number of batches per epoch must be greater than 0"
@@ -374,10 +412,13 @@ def train_multitask(args):
             num_batches = args.num_batches_per_epoch
             for batch in tqdm(range(args.num_batches_per_epoch), desc=f'train-{epoch}', disable=TQDM_DISABLE):
                 task = scheduler.get_next_task()
-                train_loss += batch_processor.process_batch(task, next(iter(training_data_loaders[task])))
+                step_loss = batch_processor.process_batch(task, next(iter(training_data_loaders[task])))
+                train_loss += step_loss
             scheduler.print_task_distribution()
 
         train_loss = train_loss / (num_batches)
+        writer.add_scalar('loss/train', train_loss, epoch)
+        writer.add_scalar('loss/step', step_loss, epoch)
 
         if (epoch + 1) % args.eval_epochs == 0:
             dev_sentiment_accuracy, _, _, \
@@ -387,6 +428,10 @@ def train_multitask(args):
                                                     sts_dev_dataloader, model, device)
 
             total_accuracy = (dev_sentiment_accuracy + dev_paraphrase_accuracy + (0.5 + (0.5 * dev_sts_corr)))/3
+            writer.add_scalar('accuracy/sst', dev_sentiment_accuracy, epoch)
+            writer.add_scalar('accuracy/para', dev_paraphrase_accuracy, epoch)
+            writer.add_scalar('accuracy/sts', dev_sts_corr, epoch)
+            writer.add_scalar('accuracy/total', total_accuracy, epoch)
 
             if total_accuracy > best_dev_acc:
                 best_dev_acc = total_accuracy
@@ -394,7 +439,6 @@ def train_multitask(args):
                 print("New Best Model!")
 
             print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, dev acc sentiment:: {dev_sentiment_accuracy :.3f}, dev acc paraphrase :: {dev_paraphrase_accuracy :.3f}, dev acc sts :: {dev_sts_corr :.3f},")
-    
 
 def test_multitask(args):
     '''Test and save predictions on the dev and test sets of all three tasks.'''
@@ -532,6 +576,10 @@ def get_args():
     parser.add_argument("--num_batches_per_epoch", type=int, default=0, help="Number of batches per epoch (used by batch scheduling mode)")
     parser.add_argument("--eval_epochs", type=int, default=1, help="Run evaluation on dev set every eval_epochs")
 
+    # Arguments for LoRA finetuning
+    parser.add_argument("--lora", action='store_true', default=False, help="Use LoRA for training")
+    parser.add_argument("--lora_rank", type=int, default=0, help="Rank of LoRA matrix. 0 to skip LoRA")
+    parser.add_argument("--lora_alpha", type=float, default=2.0, help="Alpha value for LoRA")
 
     args = parser.parse_args()
     return args
@@ -541,6 +589,23 @@ if __name__ == "__main__":
     args = get_args()
     args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
     seed_everything(args.seed)  # Fix the seed for reproducibility.
+    dateStr = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    loraStr = f'lora_r{args.lora_rank}' if args.lora else "no-lora"
+    writerName = f'logs/{dateStr}-{args.fine_tune_mode}-{args.epochs}-{args.lr}-{args.scheduling_policy}-{args.batch_size}-{loraStr}'
+    # Write all args to args.txt
+    layout = {
+        "multitask": {
+            "loss": ["Multiline", ["loss/train", "loss/step"]],
+            "accuracy": ["Multiline", ["accuracy/sst", "accuracy/para", "accuracy/sts", "accuracy/total"]],
+        },
+    }
+    writer = SummaryWriter(writerName)
+    writer.add_custom_scalars(layout)
+
+    # Save all arguments to a file
+    with open(f'{writerName}/args.txt', 'w') as f:
+        for arg in vars(args):
+            f.write(f"{arg}: {getattr(args, arg)}\n")
 
     if(not args.testOnly):
         train_multitask(args)
@@ -548,3 +613,5 @@ if __name__ == "__main__":
         print("Skipping training and running test only!")
 
     test_multitask(args)
+
+    writer.close()
