@@ -544,7 +544,7 @@ def get_args():
     parser.add_argument("--scheduling_mode", type=str, choices=('epoch', 'batch'), default='epoch', help="Scheduling mode for task selection (single task per epoch or per batch)")
     parser.add_argument("--num_batches_per_epoch", type=int, default=0, help="Number of batches per epoch (used by batch scheduling mode)")
     parser.add_argument("--eval_epochs", type=int, default=1, help="Run evaluation on dev set every eval_epochs")
-    parser.add_argument("--parallel_adaption_layers", type=str, default="", choices=('low-rank', 'pals', 'pals-shared'), help="Use parallel adaption layers for BERT")
+    parser.add_argument("--parallel_adaption_layers", type=str, default="", choices=('low-rank', 'pals', 'pals-shared', 'mixed'), help="Use parallel adaption layers for BERT")
 
     args = parser.parse_args()
     return args
