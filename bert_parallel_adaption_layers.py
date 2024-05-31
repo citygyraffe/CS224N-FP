@@ -7,8 +7,6 @@ from utils import *
 
 DEBUG_OUTPUT = False
 NUM_TASKS_SUPPORTED = 3
-AL_LATE_ATTACH = True
-SHARED_ATTENTION = False
 
 class BertLayerWithParallelAdaption(BertLayer):
 
@@ -22,7 +20,8 @@ class BertLayerWithParallelAdaption(BertLayer):
         super(BertLayerWithParallelAdaption, self).__init__(config)
         
         self.device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
-        self.adaption_mode = args.parallel_adaption_layers
+        self.config = config
+        self.args = args
 
         # This size was borrowed directly from Bert and PALS
         self.adaption_layer_size_pals = 204
@@ -39,14 +38,14 @@ class BertLayerWithParallelAdaption(BertLayer):
         self.attn_list = []
         pal_attn_config = copy.deepcopy(config)
 
-        if self.adaption_mode == 'low-rank':
+        if self.args.parallel_adaption_layers == 'low-rank':
             self.adaption_layer_size = self.adaption_layer_size_low_rank
 
             for _ in range(NUM_TASKS_SUPPORTED):
                 self.adaption_layer_list_first.append(nn.Linear(config.hidden_size, self.adaption_layer_size).to(self.device))
                 self.adaption_layer_list_second.append(nn.Linear(self.adaption_layer_size, config.hidden_size).to(self.device))
         
-        elif self.adaption_mode == 'pals':
+        elif self.args.parallel_adaption_layers == 'pals':
             self.adaption_layer_size = self.adaption_layer_size_pals
             pal_attn_config.num_attention_heads = 6
             pal_attn_config.hidden_size = self.adaption_layer_size
@@ -56,7 +55,7 @@ class BertLayerWithParallelAdaption(BertLayer):
                 self.attn_list.append(BertSelfAttention(pal_attn_config).to(self.device))
                 self.adaption_layer_list_second.append(nn.Linear(self.adaption_layer_size, config.hidden_size).to(self.device))
         
-        elif self.adaption_mode == 'pals-shared':
+        elif self.args.parallel_adaption_layers == 'pals-shared':
             self.adaption_layer_size = self.adaption_layer_size_pals
             pal_attn_config.num_attention_heads = 6
             pal_attn_config.hidden_size = self.adaption_layer_size
@@ -66,16 +65,16 @@ class BertLayerWithParallelAdaption(BertLayer):
                 for _ in range(NUM_TASKS_SUPPORTED):
                     BertLayerWithParallelAdaption.shared_adaption_layers_first.append(nn.Linear(config.hidden_size, self.adaption_layer_size).to(self.device))
                     BertLayerWithParallelAdaption.shared_adaption_layers_second.append(nn.Linear(self.adaption_layer_size, config.hidden_size).to(self.device))
-                    if SHARED_ATTENTION:
+                    if self.args.adaption_layer_shared_attention:
                         BertLayerWithParallelAdaption.shared_attn_layers.append(BertSelfAttention(pal_attn_config).to(self.device))
             else:
                 print("Skipping creating shared adaption layers, already created!")
             
-            if not SHARED_ATTENTION:
+            if not self.args.adaption_layer_shared_attention:
                 for _ in range(NUM_TASKS_SUPPORTED):
                     self.attn_list.append(BertSelfAttention(pal_attn_config).to(self.device))
         
-        elif self.adaption_mode == 'mixed':
+        elif self.args.parallel_adaption_layers == 'mixed':
             # This is a mixed mode where the first half of the layers are low-rank and the second half are PALS
             self.adaption_layer_size = self.adaption_layer_size_pals
             pal_attn_config.num_attention_heads = 6
@@ -89,12 +88,12 @@ class BertLayerWithParallelAdaption(BertLayer):
                         for _ in range(NUM_TASKS_SUPPORTED):
                             BertLayerWithParallelAdaption.shared_adaption_layers_first.append(nn.Linear(config.hidden_size, self.adaption_layer_size).to(self.device))
                             BertLayerWithParallelAdaption.shared_adaption_layers_second.append(nn.Linear(self.adaption_layer_size, config.hidden_size).to(self.device))
-                            if SHARED_ATTENTION:
+                            if self.args.adaption_layer_shared_attention:
                                 BertLayerWithParallelAdaption.shared_attn_layers.append(BertSelfAttention(pal_attn_config).to(self.device))
                     else:
                         print("Skipping creating shared adaption layers, already created!")
                      
-                    if not SHARED_ATTENTION:
+                    if not self.args.adaption_layer_shared_attention:
                         for _ in range(NUM_TASKS_SUPPORTED):
                             self.attn_list.append(BertSelfAttention(pal_attn_config).to(self.device))
                 else:
@@ -125,33 +124,33 @@ class BertLayerWithParallelAdaption(BertLayer):
             print("SIZEOF flattened_hidden_states", flattened_hidden_states.size())
             
         adaption_output = None
-        if self.adaption_mode == 'low-rank':
+        if self.args.parallel_adaption_layers == 'low-rank':
             adaption_output = self.adaption_layer_list_first[task](flattened_hidden_states)
             adaption_output = F.gelu(adaption_output)
             adaption_output = self.adaption_layer_list_second[task](adaption_output)
         
-        elif self.adaption_mode == 'pals':
+        elif self.args.parallel_adaption_layers == 'pals':
             adaption_output = self.adaption_layer_list_first[task](flattened_hidden_states)
             adaption_output = adaption_output.view(batch_size, seq_length,  self.adaption_layer_size)
             adaption_output = self.attn_list[task].forward(adaption_output, attention_mask)
             adaption_output = self.adaption_layer_list_second[task](adaption_output)
             adaption_output = F.gelu(adaption_output)
         
-        elif self.adaption_mode == 'pals-shared':
+        elif self.args.parallel_adaption_layers == 'pals-shared':
             adaption_output = BertLayerWithParallelAdaption.shared_adaption_layers_first[task](flattened_hidden_states)
             adaption_output = adaption_output.view(batch_size, seq_length,  self.adaption_layer_size)
-            if SHARED_ATTENTION:
+            if self.args.adaption_layer_shared_attention:
                 adaption_output = BertLayerWithParallelAdaption.shared_attn_layers[task].forward(adaption_output, attention_mask)
             else:
                 adaption_output = self.attn_list[task].forward(adaption_output, attention_mask)
             adaption_output = BertLayerWithParallelAdaption.shared_adaption_layers_second[task](adaption_output)
             adaption_output = F.gelu(adaption_output)
         
-        elif self.adaption_mode == 'mixed':
+        elif self.args.parallel_adaption_layers == 'mixed':
             if self.layer_index < self.number_of_hidden_layers // 2:
                 adaption_output = BertLayerWithParallelAdaption.shared_adaption_layers_first[task](flattened_hidden_states)
                 adaption_output = adaption_output.view(batch_size, seq_length,  self.adaption_layer_size)
-                if SHARED_ATTENTION:
+                if self.args.adaption_layer_shared_attention:
                     adaption_output = BertLayerWithParallelAdaption.shared_attn_layers[task].forward(adaption_output, attention_mask)
                 else:
                     adaption_output = self.attn_list[task].forward(adaption_output, attention_mask)
@@ -180,7 +179,7 @@ class BertLayerWithParallelAdaption(BertLayer):
         adaption_output = self.forward_parallel_adaption(hidden_states, attention_mask, task)
 
         # 2. Add-norm for multi-head attention. LN(h + MH(h))
-        if not AL_LATE_ATTACH:
+        if not self.args.adaption_layer_late_attach:
             attn_output = attn_output + adaption_output
         attn_output_normalized = self.add_norm(hidden_states, attn_output, self.attention_dense, self.attention_dropout, self.attention_layer_norm)
 
@@ -192,7 +191,7 @@ class BertLayerWithParallelAdaption(BertLayer):
             print("SIZEOF attn_output_normalized", attn_output_normalized.size())
 
         # 4. Add-norm for feed forward. Original: LN(h + SA(h)) Now: LN(h + SA(h) + TS(h))
-        if AL_LATE_ATTACH:
+        if self.args.adaption_layer_late_attach:
             attn_output_normalized = attn_output_normalized + adaption_output
         output = self.add_norm(attn_output_normalized, interm_output, self.out_dense, self.out_dropout, self.out_layer_norm)
 
