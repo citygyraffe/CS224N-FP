@@ -23,6 +23,8 @@ class BertLayerWithParallelAdaption(BertLayer):
         self.config = config
         self.args = args
 
+        print(f"BertLayerWithParallelAdaption config {self.args.parallel_adaption_layers} late-attach:{self.args.adaption_layer_late_attach} shared-attention:{self.args.adaption_layer_shared_attention}")
+
         # This size was borrowed directly from Bert and PALS
         self.adaption_layer_size_pals = 204
         self.adaption_layer_size_low_rank = 100
