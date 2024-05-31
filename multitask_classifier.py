@@ -27,6 +27,9 @@ from torch.cuda.amp import GradScaler, autocast
 from torch.utils.tensorboard import SummaryWriter
 import datetime
 
+from smartloss import SMARTLoss
+from loss_functions import kl_loss, sym_kl_loss
+
 from datasets import (
     SentenceClassificationDataset,
     SentenceClassificationTestDataset,
@@ -143,7 +146,7 @@ class MultitaskBERT(nn.Module):
             self.paraphrase_classifier = LinearWithLoRALayer(self.paraphrase_classifier, config.lora_rank, config.lora_alpha)
 
 
-    def forward(self, input_ids, attention_mask):
+    def forward(self, input_ids, attention_mask, perturb=False):
         'Takes a batch of sentences and produces embeddings for them.'
         # The final BERT embedding is the hidden state of [CLS] token (the first token)
         # Here, you can start by just returning the embeddings straight from BERT.
@@ -151,20 +154,26 @@ class MultitaskBERT(nn.Module):
         # (e.g., by adding other layers).
 
         # Retrieve BERT outputs
-        outputs = self.bert(input_ids, attention_mask)
+        outputs = self.bert(input_ids, attention_mask, perturb)
         # Fetch pooled output (pooled representation of each sentence)
         pooled_output = outputs['pooler_output']
         return pooled_output
 
 
-    def predict_sentiment(self, input_ids, attention_mask):
+    def predict_sentiment_from_embeddings(self, embeddings):
+        output = self.sentiment_dropout(embeddings)
+        logits = self.sentiment_classifier(output)
+        return logits
+
+
+    def predict_sentiment(self, input_ids, attention_mask, perturb=False):
         '''Given a batch of sentences, outputs logits for classifying sentiment.
         There are 5 sentiment classes:
         (0 - negative, 1- somewhat negative, 2- neutral, 3- somewhat positive, 4- positive)
         Thus, your output should contain 5 logits for each sentence.
         '''
         ### TODO
-        pooled_output = self.forward(input_ids, attention_mask)
+        pooled_output = self.forward(input_ids, attention_mask, perturb)
         pooled_output = self.sentiment_dropout(pooled_output)
         logits = self.sentiment_classifier(pooled_output)
         return logits
@@ -172,7 +181,8 @@ class MultitaskBERT(nn.Module):
 
     def predict_paraphrase(self,
                            input_ids_1, attention_mask_1,
-                           input_ids_2, attention_mask_2):
+                           input_ids_2, attention_mask_2,
+                           perturb=False):
         '''Given a batch of pairs of sentences, outputs a single logit for predicting whether they are paraphrases.
         Note that your output should be unnormalized (a logit); it will be passed to the sigmoid function
         during evaluation.
@@ -198,7 +208,7 @@ class MultitaskBERT(nn.Module):
         # ADD ATTENTION MASKS
         attentions = torch.cat((attention_mask_1, torch.ones_like(self.seperator_tokens), attention_mask_2), dim=1)
 
-        pooled_output = self.forward(inputs, attentions)
+        pooled_output = self.forward(inputs, attentions, perturb)
         pooled_output = self.paraphrase_dropout(pooled_output)
         logit = self.paraphrase_classifier(pooled_output)
         return logit
@@ -206,7 +216,8 @@ class MultitaskBERT(nn.Module):
 
     def predict_similarity(self,
                            input_ids_1, attention_mask_1,
-                           input_ids_2, attention_mask_2):
+                           input_ids_2, attention_mask_2,
+                           perturb=False):
         '''Given a batch of pairs of sentences, outputs a single logit corresponding to how similar they are.
         Note that your output should be unnormalized (a logit).
         '''
@@ -231,7 +242,7 @@ class MultitaskBERT(nn.Module):
         # ADD ATTENTION MASKS
         attentions = torch.cat((attention_mask_1, torch.ones_like(self.seperator_tokens), attention_mask_2), dim=1)
 
-        pooled_output = self.forward(inputs, attentions)
+        pooled_output = self.forward(inputs, attentions, perturb)
         pooled_output = self.similarity_dropout(pooled_output)
         logit = self.similarity_classifier(pooled_output)
         return logit
@@ -307,6 +318,101 @@ class BatchProcessor:
 
         return loss.item()
 
+
+def loss_with_smart_regularization(model, eval_fn, input_ids1, mask1, labels, batch_size,
+                                   alpha=1e-5, lambda_reg=2e-2, input_ids2=None, mask2=None):
+    # Predict (unperturbed)
+    logits = eval_fn(input_ids1, mask1, perturb=False) if eval_fn == model.predict_sentiment else eval_fn(input_ids1, mask1, input_ids2, mask2, perturb=False)
+
+    # Loss for SST
+    if eval_fn == model.predict_sentiment:
+        loss = F.cross_entropy(logits, labels.view(-1), reduction='sum') / batch_size
+    # Loss for Paraphrase
+    elif eval_fn == model.predict_paraphrase:
+        loss = F.binary_cross_entropy_with_logits(logits.view(-1), labels.view(-1).float(), reduction='sum') / batch_size
+    # Loss for STS
+    elif eval_fn == model.predict_similarity:
+        logits = logits.squeeze()
+        loss = F.mse_loss(logits, labels.view(-1).float(), reduction='sum') / batch_size
+
+    # Get SMART loss and add up to total loss
+    get_smart_loss = SMARTLoss(model=model,
+                               batch_size=batch_size,
+                               eval_fn=eval_fn,
+                               loss_fn=kl_loss,
+                               loss_last_fn=sym_kl_loss,
+                               noise_var=alpha)
+    if eval_fn == model.predict_sentiment:
+        loss += lambda_reg * get_smart_loss(input_ids1, mask1, state=logits)
+    else:
+        loss += lambda_reg * get_smart_loss(input_ids1, mask1, state=logits,
+                                            input_ids2=input_ids2, mask2=mask2)
+    loss.backward()
+    return loss.item()
+
+
+def smart_regularization_2(model, eval_fn, input_ids, mask, labels, batch_size,
+                         optimizer, noise_var=0.01, input_ids2=None, mask2=None):
+    # Create adversarial inputs by adding small perturbations
+    # Perturb the first set of embeddings (for all tasks)
+    embeddings = model.bert(input_ids, mask)
+    embeddings.requires_grad = True
+    # noise = noise_var * torch.randn(embeddings.size()).to(embeddings.device)
+    # embeddings_perturbed = embeddings + noise
+    # Perturb the second set of embeddings (for paraphrase/similarity)
+    if eval_fn != model.predict_sentiment_from_embeddings:
+        embeddings2 = model.bert.embed(input_ids2)
+        embeddings2.requires_grad = True
+        # noise2 = noise_var * torch.randn(embeddings2.size()).to(embeddings2.device)
+        # embeddings2_perturbed = embeddings2 + noise2
+
+    # Compute the outputs for perturbed inputs
+    logits = eval_fn(embeddings, mask) if eval_fn == model.predict_sentiment_from_embeddings else eval_fn(embeddings, mask, embeddings2, mask2)
+
+    # Loss for SST
+    if eval_fn == model.predict_sentiment_from_embeddings:
+        loss = F.cross_entropy(logits, labels.view(-1), reduction='sum') / batch_size
+    # Loss for Paraphrase
+    elif eval_fn == model.predict_paraphrase_from_embeddings:
+        loss = F.binary_cross_entropy_with_logits(logits.view(-1), labels.view(-1).float(), reduction='sum') / batch_size
+    # Loss for STS
+    elif eval_fn == model.predict_similarity_from_embeddings:
+        logits = logits.squeeze()
+        loss = F.mse_loss(logits, labels.view(-1).float(), reduction='sum') / batch_size
+
+    # Reset gradients
+    optimizer.zero_grad()
+
+    # Step for adversarial direction
+    loss.backward()
+
+    # perturbed_grad = inputs_perturbed.grad.data
+    # if eval_fn == model.predict_paraphrase or eval_fn == model.predict_similarity:
+    #     perturbed_grad2 = inputs2_perturbed.grad.data
+
+    # Calculate gradients and update adversarial inputs
+    # with torch.no_grad():
+    #     grad_embeddings1 = embeddings_perturbed.grad
+    #     embeddings1_adv = embeddings - noise_var * grad_embeddings1
+    #     if eval_fn != model.predict_sentiment_from_embeddings:
+    #         grad_embeddings2 = embeddings2_perturbed.grad
+    #         embeddings2_adv = embeddings2 - noise_var * grad_embeddings2
+
+    # # Update inputs by stepping against the adversarial direction
+    # inputs_adv = inputs_perturbed - noise_var * perturbed_grad
+    # inputs_adv = inputs_adv.detach()  # Detach so it won't affect computation graph in the main step
+
+
+    # Compute the logits for the updated adversarial examples
+    # logits_adv = eval_fn(embeddings1_adv) if eval_fn == model.predict_sentiment_from_embeddings else eval_fn(input_ids, mask, input_ids2, mask2)
+    # loss_adv = nn.CrossEntropyLoss()(logits_adv, labels)
+
+
+    # Backpropagate the adversarially adjusted loss
+    # loss_adv.backward()
+    optimizer.step()
+
+    return loss.item()
 
 
 def train_multitask(args):
@@ -387,12 +493,10 @@ def train_multitask(args):
     # Create a batch processor to process the batches
     batch_processor = BatchProcessor(model, optimizer, args, config)
 
-    # SMART: regularization strength
-    lambda_reg_str = 0.1
-    # SMART: perturbation strength
-    alpha = 0.01
-    # SMART: random noise to apply to model parameters
-    # epsilon = torch.randn_like(model.parameters())
+    # SMART: (hyperparam) regularization strength
+    lambda_reg = 2e-2
+    # SMART: (hyperparam) noise variance (perturbation scale)
+    alpha = 1e-5
 
     # Run for the specified number of epochs.
     for epoch in range(args.epochs):

@@ -207,6 +207,9 @@ class BertModel(BertPreTrainedModel):
     self.pooler_dense = nn.Linear(config.hidden_size, config.hidden_size)
     self.pooler_af = nn.Tanh()
 
+    # SMART: noise variance (perturbation scale / alpha)
+    self.noise_var = 0.01
+
     self.init_weights()
 
   def embed(self, input_ids):
@@ -255,7 +258,7 @@ class BertModel(BertPreTrainedModel):
 
     return hidden_states
 
-  def forward(self, input_ids, attention_mask):
+  def forward(self, input_ids, attention_mask, perturb=False):
     """
     input_ids: [batch_size, seq_len], seq_len is the max length of the batch
     attention_mask: same size as input_ids, 1 represents non-padding tokens, 0 represents padding tokens
@@ -263,8 +266,13 @@ class BertModel(BertPreTrainedModel):
     # Get the embedding for each input token.
     embedding_output = self.embed(input_ids=input_ids)
 
+    # # SMART: Apply perturbation
+    if perturb:
+        noise = torch.randn_like(embedding_output, requires_grad=True) * self.noise_var
+        embedding_output += noise
+
     # Feed to a transformer (a stack of BertLayers).
-    sequence_output = self.encode(embedding_output, attention_mask=attention_mask)
+    sequence_output = self.encode(embedding_output, attention_mask)
 
     # Get cls token hidden state.
     first_tk = sequence_output[:, 0]

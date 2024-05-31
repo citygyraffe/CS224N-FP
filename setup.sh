@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 conda create -n cs224n_dfp python=3.8
+conda init
 conda activate cs224n_dfp
 
 pip install torch torchvision torchaudio
