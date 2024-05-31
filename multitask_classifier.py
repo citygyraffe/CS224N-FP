@@ -54,6 +54,9 @@ TQDM_DISABLE=False
 DEBUG_OUTPUT = False
 USE_COMBINED_SST_DATASET = False
 STS_TRAINING_SCALING_FACTOR = 1
+SMART_LAMBDA = 2e-2 # SMART: (hyperparam) regularization strength
+SMART_ALPHA = 1e-5 # SMART: (hyperparam) noise variance (perturbation scale)
+
 
 # Fix the random seed.
 def seed_everything(seed=11711):
@@ -279,8 +282,16 @@ class BatchProcessor:
                                        batch['labels'].to(self.device))
 
             with autocast():
-                logits = self.model.predict_sentiment(b_ids, b_mask)
-                loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / self.args.batch_size
+                # logits = self.model.predict_sentiment(b_ids, b_mask)
+                # loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / self.args.batch_size
+                loss = loss_with_smart_regularization(model=self.model,
+                                                      eval_fn=self.model.predict_sentiment,
+                                                      input_ids1=b_ids,
+                                                      mask1=b_mask,
+                                                      labels=b_labels,
+                                                      batch_size=args.batch_size,
+                                                      alpha=SMART_ALPHA,
+                                                      lambda_reg=SMART_LAMBDA)
 
         elif task == "para":
             b_ids1, b_mask1, b_ids2, b_mask2, b_labels = (
@@ -292,8 +303,18 @@ class BatchProcessor:
             )
 
             with autocast():
-                logits = self.model.predict_paraphrase(b_ids1, b_mask1, b_ids2, b_mask2)
-                loss = F.binary_cross_entropy_with_logits(logits.view(-1), b_labels.view(-1).float(), reduction='sum') / self.args.batch_size
+                # logits = self.model.predict_paraphrase(b_ids1, b_mask1, b_ids2, b_mask2)
+                # loss = F.binary_cross_entropy_with_logits(logits.view(-1), b_labels.view(-1).float(), reduction='sum') / self.args.batch_size
+                loss = loss_with_smart_regularization(model=self.model,
+                                                      eval_fn=self.model.predict_paraphrase,
+                                                      input_ids1=b_ids1,
+                                                      mask1=b_mask1,
+                                                      input_ids2=b_ids2,
+                                                      mask2=b_mask2,
+                                                      labels=b_labels,
+                                                      batch_size=args.batch_size,
+                                                      alpha=SMART_ALPHA,
+                                                      lambda_reg=SMART_LAMBDA)
 
         elif task == "sts":
             for _ in range(STS_TRAINING_SCALING_FACTOR):
@@ -306,8 +327,18 @@ class BatchProcessor:
                 )
 
                 with autocast():
-                    logits = self.model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2).squeeze()
-                    loss = F.mse_loss(logits, b_labels.view(-1).float(), reduction='sum') / self.args.batch_size
+                    # logits = self.model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2).squeeze()
+                    # loss = F.mse_loss(logits, b_labels.view(-1).float(), reduction='sum') / self.args.batch_size
+                    loss = loss_with_smart_regularization(model=self.model,
+                                                          eval_fn=self.model.predict_similarity,
+                                                          input_ids1=b_ids1,
+                                                          mask1=b_mask1,
+                                                          input_ids2=b_ids2,
+                                                          mask2=b_mask2,
+                                                          labels=b_labels,
+                                                          batch_size=args.batch_size,
+                                                          alpha=SMART_ALPHA,
+                                                          lambda_reg=SMART_LAMBDA)
 
         else:
             raise ValueError(f"train_multitask::Unknown task: {task}")
@@ -347,8 +378,8 @@ def loss_with_smart_regularization(model, eval_fn, input_ids1, mask1, labels, ba
     else:
         loss += lambda_reg * get_smart_loss(input_ids1, mask1, state=logits,
                                             input_ids2=input_ids2, mask2=mask2)
-    loss.backward()
-    return loss.item()
+    # loss.backward()
+    return loss
 
 
 def smart_regularization_2(model, eval_fn, input_ids, mask, labels, batch_size,
@@ -492,11 +523,6 @@ def train_multitask(args):
 
     # Create a batch processor to process the batches
     batch_processor = BatchProcessor(model, optimizer, args, config)
-
-    # SMART: (hyperparam) regularization strength
-    lambda_reg = 2e-2
-    # SMART: (hyperparam) noise variance (perturbation scale)
-    alpha = 1e-5
 
     # Run for the specified number of epochs.
     for epoch in range(args.epochs):
