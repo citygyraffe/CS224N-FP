@@ -619,7 +619,8 @@ if __name__ == "__main__":
     seed_everything(args.seed)  # Fix the seed for reproducibility.
     dateStr = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     loraStr = f'lora_r{args.lora_rank}' if args.lora else "no-lora"
-    outputPathName = f'logs/{dateStr}-{args.fine_tune_mode}-{args.epochs}-{args.lr}-{args.scheduling_policy}-{args.batch_size}-{loraStr}'
+    palsStr = f'pals_{args.parallel_adaption_layers}_lateAttach-{args.adaption_layer_late_attach}_sharedAttention-{args.adaption_layer_shared_attention}' if args.parallel_adaption_layers != '' else "no-pals"
+    outputPathName = f'logs/{dateStr}-{args.fine_tune_mode}-{args.epochs}-{args.lr}-{args.scheduling_policy}-{args.batch_size}-{loraStr}-{palsStr}'
     args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
     args.outputPathName = outputPathName
 
