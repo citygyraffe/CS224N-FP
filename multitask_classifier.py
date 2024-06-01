@@ -26,6 +26,7 @@ from tqdm import tqdm
 from torch.cuda.amp import GradScaler, autocast
 from torch.utils.tensorboard import SummaryWriter
 import datetime
+import shutil
 
 from datasets import (
     SentenceClassificationDataset,
@@ -372,7 +373,12 @@ def train_multitask(args):
     model = model.to(device)
 
     print(model)
-    print(f"Parameters requiring gradient update: {sum(param.numel() for param in model.parameters() if param.requires_grad)}")
+
+    # Get number of trainable parameters
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Number of trainable parameters: {trainable_params}")
+    print(f"Total number of parameters: {total_params}")
 
     # for name, param in model.named_parameters():
     #     print(f"{name}: {param.requires_grad}")
@@ -439,6 +445,8 @@ def train_multitask(args):
                 print("New Best Model!")
 
             print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, dev acc sentiment:: {dev_sentiment_accuracy :.3f}, dev acc paraphrase :: {dev_paraphrase_accuracy :.3f}, dev acc sts :: {dev_sts_corr :.3f},")
+
+    return total_params, trainable_params
 
 def test_multitask(args):
     '''Test and save predictions on the dev and test sets of all three tasks.'''
@@ -527,6 +535,9 @@ def test_multitask(args):
             for p, s in zip(test_sts_sent_ids, test_sts_y_pred):
                 f.write(f"{p} , {s} \n")
 
+        return (dev_sentiment_accuracy,dev_sst_y_pred, dev_sst_sent_ids, \
+            dev_paraphrase_accuracy, dev_para_y_pred, dev_para_sent_ids, \
+            dev_sts_corr, dev_sts_y_pred, dev_sts_sent_ids)
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -570,6 +581,7 @@ def get_args():
 
     # Custom arguments
     parser.add_argument("--testOnly", action='store_true', help="Only run test on existing model")
+    parser.add_argument("--model_path", type=str, help="Path to the model to load for testing")
     parser.add_argument("--force_task", type=str, choices=('', 'sst', 'para', 'sts'), default="", help="Force the task to train on (sst, para, sts)")
     parser.add_argument("--scheduling_policy", type=str, choices=('random', 'round-robin', 'annealed-sampling'), default="round-robin", help="Scheduling policy for task selection")
     parser.add_argument("--scheduling_mode", type=str, choices=('epoch', 'batch'), default='epoch', help="Scheduling mode for task selection (single task per epoch or per batch)")
@@ -587,11 +599,19 @@ def get_args():
 
 if __name__ == "__main__":
     args = get_args()
-    args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
     seed_everything(args.seed)  # Fix the seed for reproducibility.
     dateStr = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     loraStr = f'lora_r{args.lora_rank}' if args.lora else "no-lora"
-    writerName = f'logs/{dateStr}-{args.fine_tune_mode}-{args.epochs}-{args.lr}-{args.scheduling_policy}-{args.batch_size}-{loraStr}'
+    outputPathName = f'logs/{dateStr}-{args.fine_tune_mode}-{args.epochs}-{args.lr}-{args.scheduling_policy}-{args.batch_size}-{loraStr}'
+    args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
+    args.outputPathName = outputPathName
+
+    # Values to save in results.txt
+    training_time = 0
+    testing_time = 0
+    total_params = "N/A"
+    training_params = "N/A"
+
     # Write all args to args.txt
     layout = {
         "multitask": {
@@ -599,19 +619,49 @@ if __name__ == "__main__":
             "accuracy": ["Multiline", ["accuracy/sst", "accuracy/para", "accuracy/sts", "accuracy/total"]],
         },
     }
-    writer = SummaryWriter(writerName)
+    writer = SummaryWriter(outputPathName)
     writer.add_custom_scalars(layout)
 
     # Save all arguments to a file
-    with open(f'{writerName}/args.txt', 'w') as f:
+    with open(f'{outputPathName}/args.txt', 'w') as f:
         for arg in vars(args):
             f.write(f"{arg}: {getattr(args, arg)}\n")
 
+
     if(not args.testOnly):
-        train_multitask(args)
+        # Start timer to measure training time
+        start_time = datetime.datetime.now()
+        total_params, training_params = train_multitask(args)
+        end_time = datetime.datetime.now()
+        training_time = end_time - start_time
+        print(f"Training time: {training_time}")
     else:
         print("Skipping training and running test only!")
 
-    test_multitask(args)
+    # Start timer to measure testing time
+    start_time = datetime.datetime.now()
+    # Test the model
+    dev_sentiment_accuracy,_, _, \
+            dev_paraphrase_accuracy, _, _, \
+            dev_sts_corr, _, _ = test_multitask(args)
+    end_time = datetime.datetime.now()
+    testing_time = end_time - start_time
+
+    # Write results to a file
+    with open(f'{outputPathName}/results.txt', 'w') as f:
+        f.write(f"dev sentiment acc :: {dev_sentiment_accuracy :.3f}\n")
+        f.write(f"dev paraphrase acc :: {dev_paraphrase_accuracy :.3f}\n")
+        f.write(f"dev sts corr :: {dev_sts_corr :.3f}\n")
+        f.write(f"Training time: {training_time}\n")
+        f.write(f"Testing time: {testing_time}\n")
+        f.write(f"Total parameters: {total_params}\n")
+        f.write(f"Tunable parameters: {training_params}\n")
+
+    # Copy predictions output and model to the output directory
+    try:
+        shutil.copytree('predictions', f'{outputPathName}/predictions')
+        shutil.copyfile(args.filepath, f'{outputPathName}/model.pt')
+    except:
+        print("Error copying model or predictions to output directory")
 
     writer.close()
