@@ -36,21 +36,20 @@ from datasets import (
     load_multitask_data
 )
 
-# Custom imports
-from task_scheduler import TaskScheduler
-
 from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_multitask
-
-# ADDED INCLUDES
-from tokenizer import BertTokenizer
-from lora_layer import LoRALayer, LinearWithLoRALayer
-
 
 TQDM_DISABLE=False
 
+# Custom imports
+from tokenizer import BertTokenizer
+from task_scheduler import TaskScheduler
+from lora_layer import LoRALayer, LinearWithLoRALayer
+from bert_parallel_adaption_layers import BertModelWithParallelAdaption
+from custom_utils import time_function
+
 # CUSTOM SETTINGS
 DEBUG_OUTPUT = False
-USE_COMBINED_SST_DATASET = False
+USE_COMBINED_SST_DATASET = True
 STS_TRAINING_SCALING_FACTOR = 1
 
 # Fix the random seed.
@@ -82,7 +81,15 @@ class MultitaskBERT(nn.Module):
     '''
     def __init__(self, config):
         super(MultitaskBERT, self).__init__()
-        self.bert = BertModel.from_pretrained('bert-base-uncased')
+
+        self.bert = None
+        if args.parallel_adaption_layers == '':
+            print("Using standard BERT model")
+            self.bert = BertModel.from_pretrained('bert-base-uncased')
+        else:
+            print(f"Using BERT model with parallel adaption layers: {args.parallel_adaption_layers}")
+            self.bert = BertModelWithParallelAdaption.from_pretrained('bert-base-uncased', args=args)
+        
         # last-linear-layer mode does not require updating BERT paramters.
         assert config.fine_tune_mode in ["last-linear-layer", "full-model"]
         print(f"Fine-tune mode: {config.fine_tune_mode}")
@@ -144,7 +151,7 @@ class MultitaskBERT(nn.Module):
             self.paraphrase_classifier = LinearWithLoRALayer(self.paraphrase_classifier, config.lora_rank, config.lora_alpha)
 
 
-    def forward(self, input_ids, attention_mask):
+    def forward(self, input_ids, attention_mask, task):
         'Takes a batch of sentences and produces embeddings for them.'
         # The final BERT embedding is the hidden state of [CLS] token (the first token)
         # Here, you can start by just returning the embeddings straight from BERT.
@@ -152,7 +159,11 @@ class MultitaskBERT(nn.Module):
         # (e.g., by adding other layers).
 
         # Retrieve BERT outputs
-        outputs = self.bert(input_ids, attention_mask)
+        outputs = None
+        if args.parallel_adaption_layers != '':
+            outputs = self.bert(input_ids, attention_mask, task=task)
+        else:
+            outputs = self.bert(input_ids, attention_mask)
         # Fetch pooled output (pooled representation of each sentence)
         pooled_output = outputs['pooler_output']
         return pooled_output
@@ -165,7 +176,7 @@ class MultitaskBERT(nn.Module):
         Thus, your output should contain 5 logits for each sentence.
         '''
         ### TODO
-        pooled_output = self.forward(input_ids, attention_mask)
+        pooled_output = self.forward(input_ids, attention_mask, 0)
         pooled_output = self.sentiment_dropout(pooled_output)
         logits = self.sentiment_classifier(pooled_output)
         return logits
@@ -199,7 +210,7 @@ class MultitaskBERT(nn.Module):
         # ADD ATTENTION MASKS
         attentions = torch.cat((attention_mask_1, torch.ones_like(self.seperator_tokens), attention_mask_2), dim=1)
 
-        pooled_output = self.forward(inputs, attentions)
+        pooled_output = self.forward(inputs, attentions, 1)
         pooled_output = self.paraphrase_dropout(pooled_output)
         logit = self.paraphrase_classifier(pooled_output)
         return logit
@@ -232,7 +243,7 @@ class MultitaskBERT(nn.Module):
         # ADD ATTENTION MASKS
         attentions = torch.cat((attention_mask_1, torch.ones_like(self.seperator_tokens), attention_mask_2), dim=1)
 
-        pooled_output = self.forward(inputs, attentions)
+        pooled_output = self.forward(inputs, attentions, 2)
         pooled_output = self.similarity_dropout(pooled_output)
         logit = self.similarity_classifier(pooled_output)
         return logit
@@ -309,7 +320,7 @@ class BatchProcessor:
         return loss.item()
 
 
-
+@time_function
 def train_multitask(args):
     '''Train MultitaskBERT.
 
@@ -459,6 +470,7 @@ def test_multitask(args):
         model.load_state_dict(saved['model'])
         model = model.to(device)
         print(f"Loaded model to test from {args.filepath}")
+        print(model)
 
         sst_test_data, num_labels,para_test_data, sts_test_data = \
             load_multitask_data(args.sst_test,args.para_test, args.sts_test, split='test')
@@ -587,6 +599,11 @@ def get_args():
     parser.add_argument("--scheduling_mode", type=str, choices=('epoch', 'batch'), default='epoch', help="Scheduling mode for task selection (single task per epoch or per batch)")
     parser.add_argument("--num_batches_per_epoch", type=int, default=0, help="Number of batches per epoch (used by batch scheduling mode)")
     parser.add_argument("--eval_epochs", type=int, default=1, help="Run evaluation on dev set every eval_epochs")
+    
+    # Adapation layers arguments
+    parser.add_argument("--parallel_adaption_layers", type=str, default="", choices=('low-rank', 'pals', 'pals-shared', 'mixed'), help="Use parallel adaption layers for BERT")
+    parser.add_argument("--adaption_layer_late_attach", action='store_true', help="Attach adaption layers at end of BERT layers")
+    parser.add_argument("--adaption_layer_shared_attention", action='store_true', help="Use shared attention for adaption layers")
 
     # Arguments for LoRA finetuning
     parser.add_argument("--lora", action='store_true', default=False, help="Use LoRA for training")
