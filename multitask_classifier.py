@@ -462,6 +462,7 @@ def test_multitask(args):
         model.load_state_dict(saved['model'])
         model = model.to(device)
         print(f"Loaded model to test from {args.filepath}")
+        print(model)
 
         sst_test_data, num_labels,para_test_data, sts_test_data = \
             load_multitask_data(args.sst_test,args.para_test, args.sts_test, split='test')

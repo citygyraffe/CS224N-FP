@@ -12,9 +12,9 @@ class BertLayerWithParallelAdaption(BertLayer):
 
     # Shared across all layers NOT tasks
     instance_counter = 0
-    shared_adaption_layers_first = []
-    shared_adaption_layers_second = []
-    shared_attn_layers = []
+    shared_adaption_layers_first = nn.ModuleList()
+    shared_adaption_layers_second = nn.ModuleList()
+    shared_attn_layers = nn.ModuleList()
 
     def __init__(self, config, args):
         super(BertLayerWithParallelAdaption, self).__init__(config)
@@ -35,9 +35,9 @@ class BertLayerWithParallelAdaption(BertLayer):
         self.number_of_hidden_layers = config.num_hidden_layers
 
         # These lists hold layers and parameters for each task
-        self.adaption_layer_list_first = []
-        self.adaption_layer_list_second = []
-        self.attn_list = []
+        self.adaption_layer_list_first = nn.ModuleList()
+        self.adaption_layer_list_second = nn.ModuleList()
+        self.attn_list = nn.ModuleList()
         pal_attn_config = copy.deepcopy(config)
 
         if self.args.parallel_adaption_layers == 'low-rank':
