@@ -12,11 +12,8 @@ class BertLayerWithParallelAdaption(BertLayer):
 
     # Shared across all layers NOT tasks
     instance_counter = 0
-    shared_adaption_layers_first = nn.ModuleList()
-    shared_adaption_layers_second = nn.ModuleList()
-    shared_attn_layers = nn.ModuleList()
 
-    def __init__(self, config, args):
+    def __init__(self, config, args, shared_adaption_layers_first = None, shared_adaption_layers_second = None, shared_attn_layers = None):
         super(BertLayerWithParallelAdaption, self).__init__(config)
         
         self.device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
@@ -39,6 +36,11 @@ class BertLayerWithParallelAdaption(BertLayer):
         self.adaption_layer_list_second = nn.ModuleList()
         self.attn_list = nn.ModuleList()
         pal_attn_config = copy.deepcopy(config)
+
+        # Shared adaption layers
+        self.shared_adaption_layers_first = shared_adaption_layers_first
+        self.shared_adaption_layers_second = shared_adaption_layers_second
+        self.shared_attn_layers = shared_attn_layers
 
         if self.args.parallel_adaption_layers == 'low-rank':
             self.adaption_layer_size = self.adaption_layer_size_low_rank
@@ -65,10 +67,10 @@ class BertLayerWithParallelAdaption(BertLayer):
             if BertLayerWithParallelAdaption.instance_counter == 0:
                 print("Creating shared adaption layers")
                 for _ in range(NUM_TASKS_SUPPORTED):
-                    BertLayerWithParallelAdaption.shared_adaption_layers_first.append(nn.Linear(config.hidden_size, self.adaption_layer_size).to(self.device))
-                    BertLayerWithParallelAdaption.shared_adaption_layers_second.append(nn.Linear(self.adaption_layer_size, config.hidden_size).to(self.device))
+                    self.shared_adaption_layers_first.append(nn.Linear(config.hidden_size, self.adaption_layer_size).to(self.device))
+                    self.shared_adaption_layers_second.append(nn.Linear(self.adaption_layer_size, config.hidden_size).to(self.device))
                     if self.args.adaption_layer_shared_attention:
-                        BertLayerWithParallelAdaption.shared_attn_layers.append(BertSelfAttention(pal_attn_config).to(self.device))
+                        self.shared_attn_layers.append(BertSelfAttention(pal_attn_config).to(self.device))
             else:
                 print("Skipping creating shared adaption layers, already created!")
             
@@ -88,10 +90,10 @@ class BertLayerWithParallelAdaption(BertLayer):
                     if BertLayerWithParallelAdaption.instance_counter == 0:
                         print("Creating shared adaption layers")
                         for _ in range(NUM_TASKS_SUPPORTED):
-                            BertLayerWithParallelAdaption.shared_adaption_layers_first.append(nn.Linear(config.hidden_size, self.adaption_layer_size).to(self.device))
-                            BertLayerWithParallelAdaption.shared_adaption_layers_second.append(nn.Linear(self.adaption_layer_size, config.hidden_size).to(self.device))
+                            self.shared_adaption_layers_first.append(nn.Linear(config.hidden_size, self.adaption_layer_size).to(self.device))
+                            self.shared_adaption_layers_second.append(nn.Linear(self.adaption_layer_size, config.hidden_size).to(self.device))
                             if self.args.adaption_layer_shared_attention:
-                                BertLayerWithParallelAdaption.shared_attn_layers.append(BertSelfAttention(pal_attn_config).to(self.device))
+                                self.shared_attn_layers.append(BertSelfAttention(pal_attn_config).to(self.device))
                     else:
                         print("Skipping creating shared adaption layers, already created!")
                      
@@ -139,24 +141,24 @@ class BertLayerWithParallelAdaption(BertLayer):
             adaption_output = F.gelu(adaption_output)
         
         elif self.args.parallel_adaption_layers == 'pals-shared':
-            adaption_output = BertLayerWithParallelAdaption.shared_adaption_layers_first[task](flattened_hidden_states)
+            adaption_output = self.shared_adaption_layers_first[task](flattened_hidden_states)
             adaption_output = adaption_output.view(batch_size, seq_length,  self.adaption_layer_size)
             if self.args.adaption_layer_shared_attention:
-                adaption_output = BertLayerWithParallelAdaption.shared_attn_layers[task].forward(adaption_output, attention_mask)
+                adaption_output = self.shared_attn_layers[task].forward(adaption_output, attention_mask)
             else:
                 adaption_output = self.attn_list[task].forward(adaption_output, attention_mask)
-            adaption_output = BertLayerWithParallelAdaption.shared_adaption_layers_second[task](adaption_output)
+            adaption_output = self.shared_adaption_layers_second[task](adaption_output)
             adaption_output = F.gelu(adaption_output)
         
         elif self.args.parallel_adaption_layers == 'mixed':
             if self.layer_index < self.number_of_hidden_layers // 2:
-                adaption_output = BertLayerWithParallelAdaption.shared_adaption_layers_first[task](flattened_hidden_states)
+                adaption_output = self.shared_adaption_layers_first[task](flattened_hidden_states)
                 adaption_output = adaption_output.view(batch_size, seq_length,  self.adaption_layer_size)
                 if self.args.adaption_layer_shared_attention:
-                    adaption_output = BertLayerWithParallelAdaption.shared_attn_layers[task].forward(adaption_output, attention_mask)
+                    adaption_output = self.shared_attn_layers[task].forward(adaption_output, attention_mask)
                 else:
                     adaption_output = self.attn_list[task].forward(adaption_output, attention_mask)
-                adaption_output = BertLayerWithParallelAdaption.shared_adaption_layers_second[task](adaption_output)
+                adaption_output = self.shared_adaption_layers_second[task](adaption_output)
                 adaption_output = F.gelu(adaption_output)
             else:
                 adaption_output = self.adaption_layer_list_first[task](flattened_hidden_states)
@@ -203,8 +205,16 @@ class BertModelWithParallelAdaption(BertModel):
     def __init__(self, config, args):
         super(BertModelWithParallelAdaption, self).__init__(config)
 
+        # Shared adation layers
+        self.shared_adaption_layers_first = nn.ModuleList()
+        self.shared_adaption_layers_second = nn.ModuleList()
+        self.shared_attn_layers = nn.ModuleList()
+
         # Replace the original BertLayer with the new BertLayerWithAdaption
-        self.bert_layers = nn.ModuleList([BertLayerWithParallelAdaption(config, args) for _ in range(config.num_hidden_layers)])
+        if args.parallel_adaption_layers == 'pals-shared' or args.parallel_adaption_layers == 'mixed':
+            self.bert_layers = nn.ModuleList([BertLayerWithParallelAdaption(config, args, self.shared_adaption_layers_first, self.shared_adaption_layers_second, self.shared_attn_layers) for _ in range(config.num_hidden_layers)])
+        else:
+            self.bert_layers = nn.ModuleList([BertLayerWithParallelAdaption(config, args) for _ in range(config.num_hidden_layers)])
 
     def encode(self, hidden_states, attention_mask, task):
         """
