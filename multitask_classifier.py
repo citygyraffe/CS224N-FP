@@ -157,8 +157,6 @@ class MultitaskBERT(nn.Module):
 
 
     def forward(self, input_ids, attention_mask, task, perturb=False):
-
-    def forward(self, input_ids, attention_mask, task):
         'Takes a batch of sentences and produces embeddings for them.'
         # The final BERT embedding is the hidden state of [CLS] token (the first token)
         # Here, you can start by just returning the embeddings straight from BERT.
