@@ -46,7 +46,7 @@ TQDM_DISABLE=False
 from tokenizer import BertTokenizer
 from task_scheduler import TaskScheduler
 from lora_layer import LoRALayer, LinearWithLoRALayer
-from bert_parallel_adaption_layers import BertModelWithParallelAdaption
+from bert_parallel_adaption_layers import BertModelWithParallelAdaption, BertLayerWithParallelAdaption
 from custom_utils import time_function
 
 # CUSTOM SETTINGS
@@ -529,6 +529,8 @@ def train_multitask(args):
 
             print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, dev acc sentiment:: {dev_sentiment_accuracy :.3f}, dev acc paraphrase :: {dev_paraphrase_accuracy :.3f}, dev acc sts :: {dev_sts_corr :.3f},")
 
+    # TODO(anksood): Finda  better way to do this. Hacky way to reset so that when model is loaded in eval it creates the PALS shared layers again
+    BertLayerWithParallelAdaption.instance_counter = 0
     return total_params, trainable_params
 
 def test_multitask(args):
