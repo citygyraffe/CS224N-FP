@@ -26,6 +26,7 @@ from tqdm import tqdm
 from torch.cuda.amp import GradScaler, autocast
 from torch.utils.tensorboard import SummaryWriter
 import datetime
+import shutil
 
 from smartloss import SMARTLoss, sym_kl_loss
 
@@ -37,21 +38,20 @@ from datasets import (
     load_multitask_data
 )
 
-# Custom imports
-from task_scheduler import TaskScheduler
-
 from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_multitask
-
-# ADDED INCLUDES
-from tokenizer import BertTokenizer
-from lora_layer import LoRALayer, LinearWithLoRALayer
-
 
 TQDM_DISABLE=False
 
+# Custom imports
+from tokenizer import BertTokenizer
+from task_scheduler import TaskScheduler
+from lora_layer import LoRALayer, LinearWithLoRALayer
+from bert_parallel_adaption_layers import BertModelWithParallelAdaption
+from custom_utils import time_function
+
 # CUSTOM SETTINGS
 DEBUG_OUTPUT = False
-USE_COMBINED_SST_DATASET = False
+USE_COMBINED_SST_DATASET = True
 STS_TRAINING_SCALING_FACTOR = 1
 SMART_LAMBDA = 2e-2 # SMART: (hyperparam) regularization strength
 SMART_ALPHA = 1e-5 # SMART: (hyperparam) noise variance (perturbation scale)
@@ -86,7 +86,15 @@ class MultitaskBERT(nn.Module):
     '''
     def __init__(self, config):
         super(MultitaskBERT, self).__init__()
-        self.bert = BertModel.from_pretrained('bert-base-uncased')
+
+        self.bert = None
+        if args.parallel_adaption_layers == '':
+            print("Using standard BERT model")
+            self.bert = BertModel.from_pretrained('bert-base-uncased')
+        else:
+            print(f"Using BERT model with parallel adaption layers: {args.parallel_adaption_layers}")
+            self.bert = BertModelWithParallelAdaption.from_pretrained('bert-base-uncased', args=args)
+        
         # last-linear-layer mode does not require updating BERT paramters.
         assert config.fine_tune_mode in ["last-linear-layer", "full-model"]
         print(f"Fine-tune mode: {config.fine_tune_mode}")
@@ -148,7 +156,9 @@ class MultitaskBERT(nn.Module):
             self.paraphrase_classifier = LinearWithLoRALayer(self.paraphrase_classifier, config.lora_rank, config.lora_alpha)
 
 
-    def forward(self, input_ids, attention_mask, perturb=False):
+    def forward(self, input_ids, attention_mask, task, perturb=False):
+
+    def forward(self, input_ids, attention_mask, task):
         'Takes a batch of sentences and produces embeddings for them.'
         # The final BERT embedding is the hidden state of [CLS] token (the first token)
         # Here, you can start by just returning the embeddings straight from BERT.
@@ -156,7 +166,11 @@ class MultitaskBERT(nn.Module):
         # (e.g., by adding other layers).
 
         # Retrieve BERT outputs
-        outputs = self.bert(input_ids, attention_mask, perturb)
+        outputs = None
+        if args.parallel_adaption_layers != '':
+            outputs = self.bert(input_ids, attention_mask, task=task, perturb=perturb)
+        else:
+            outputs = self.bert(input_ids, attention_mask, perturb=perturb)
         # Fetch pooled output (pooled representation of each sentence)
         pooled_output = outputs['pooler_output']
         return pooled_output
@@ -169,7 +183,7 @@ class MultitaskBERT(nn.Module):
         Thus, your output should contain 5 logits for each sentence.
         '''
         ### TODO
-        pooled_output = self.forward(input_ids, attention_mask, perturb)
+        pooled_output = self.forward(input_ids, attention_mask, task=0, perturb=perturb)
         pooled_output = self.sentiment_dropout(pooled_output)
         logits = self.sentiment_classifier(pooled_output)
         return logits
@@ -204,7 +218,7 @@ class MultitaskBERT(nn.Module):
         # ADD ATTENTION MASKS
         attentions = torch.cat((attention_mask_1, torch.ones_like(self.seperator_tokens), attention_mask_2), dim=1)
 
-        pooled_output = self.forward(inputs, attentions, perturb)
+        pooled_output = self.forward(inputs, attentions, task=1, perturb=perturb)
         pooled_output = self.paraphrase_dropout(pooled_output)
         logit = self.paraphrase_classifier(pooled_output)
         return logit
@@ -238,7 +252,7 @@ class MultitaskBERT(nn.Module):
         # ADD ATTENTION MASKS
         attentions = torch.cat((attention_mask_1, torch.ones_like(self.seperator_tokens), attention_mask_2), dim=1)
 
-        pooled_output = self.forward(inputs, attentions, perturb)
+        pooled_output = self.forward(inputs, attentions, task=2, perturb=perturb)
         pooled_output = self.similarity_dropout(pooled_output)
         logit = self.similarity_classifier(pooled_output)
         return logit
@@ -379,7 +393,8 @@ def loss_with_smart_regularization(model, eval_fn, input_ids1, mask1, labels, ba
     # loss.backward()
     return loss
 
-
+  
+@time_function
 def train_multitask(args):
     '''Train MultitaskBERT.
 
@@ -443,7 +458,12 @@ def train_multitask(args):
     model = model.to(device)
 
     print(model)
-    print(f"Parameters requiring gradient update: {sum(param.numel() for param in model.parameters() if param.requires_grad)}")
+
+    # Get number of trainable parameters
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Number of trainable parameters: {trainable_params}")
+    print(f"Total number of parameters: {total_params}")
 
     # for name, param in model.named_parameters():
     #     print(f"{name}: {param.requires_grad}")
@@ -511,6 +531,8 @@ def train_multitask(args):
 
             print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, dev acc sentiment:: {dev_sentiment_accuracy :.3f}, dev acc paraphrase :: {dev_paraphrase_accuracy :.3f}, dev acc sts :: {dev_sts_corr :.3f},")
 
+    return total_params, trainable_params
+
 def test_multitask(args):
     '''Test and save predictions on the dev and test sets of all three tasks.'''
     with torch.no_grad():
@@ -522,6 +544,7 @@ def test_multitask(args):
         model.load_state_dict(saved['model'])
         model = model.to(device)
         print(f"Loaded model to test from {args.filepath}")
+        print(model)
 
         sst_test_data, num_labels,para_test_data, sts_test_data = \
             load_multitask_data(args.sst_test,args.para_test, args.sts_test, split='test')
@@ -598,6 +621,9 @@ def test_multitask(args):
             for p, s in zip(test_sts_sent_ids, test_sts_y_pred):
                 f.write(f"{p} , {s} \n")
 
+        return (dev_sentiment_accuracy,dev_sst_y_pred, dev_sst_sent_ids, \
+            dev_paraphrase_accuracy, dev_para_y_pred, dev_para_sent_ids, \
+            dev_sts_corr, dev_sts_y_pred, dev_sts_sent_ids)
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -641,11 +667,17 @@ def get_args():
 
     # Custom arguments
     parser.add_argument("--testOnly", action='store_true', help="Only run test on existing model")
+    parser.add_argument("--model_path", type=str, help="Path to the model to load for testing")
     parser.add_argument("--force_task", type=str, choices=('', 'sst', 'para', 'sts'), default="", help="Force the task to train on (sst, para, sts)")
     parser.add_argument("--scheduling_policy", type=str, choices=('random', 'round-robin', 'annealed-sampling'), default="round-robin", help="Scheduling policy for task selection")
     parser.add_argument("--scheduling_mode", type=str, choices=('epoch', 'batch'), default='epoch', help="Scheduling mode for task selection (single task per epoch or per batch)")
     parser.add_argument("--num_batches_per_epoch", type=int, default=0, help="Number of batches per epoch (used by batch scheduling mode)")
     parser.add_argument("--eval_epochs", type=int, default=1, help="Run evaluation on dev set every eval_epochs")
+    
+    # Adapation layers arguments
+    parser.add_argument("--parallel_adaption_layers", type=str, default="", choices=('low-rank', 'pals', 'pals-shared', 'mixed'), help="Use parallel adaption layers for BERT")
+    parser.add_argument("--adaption_layer_late_attach", action='store_true', help="Attach adaption layers at end of BERT layers")
+    parser.add_argument("--adaption_layer_shared_attention", action='store_true', help="Use shared attention for adaption layers")
 
     # Arguments for LoRA finetuning
     parser.add_argument("--lora", action='store_true', default=False, help="Use LoRA for training")
@@ -663,11 +695,20 @@ def get_args():
 
 if __name__ == "__main__":
     args = get_args()
-    args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
     seed_everything(args.seed)  # Fix the seed for reproducibility.
     dateStr = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     loraStr = f'lora_r{args.lora_rank}' if args.lora else "no-lora"
-    writerName = f'logs/{dateStr}-{args.fine_tune_mode}-{args.epochs}-{args.lr}-{args.scheduling_policy}-{args.batch_size}-{loraStr}'
+    palsStr = f'pals_{args.parallel_adaption_layers}_lateAttach-{args.adaption_layer_late_attach}_sharedAttention-{args.adaption_layer_shared_attention}' if args.parallel_adaption_layers != '' else "no-pals"
+    outputPathName = f'logs/{dateStr}-{args.fine_tune_mode}-{args.epochs}-{args.lr}-{args.scheduling_policy}-{args.batch_size}-{loraStr}-{palsStr}'
+    args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
+    args.outputPathName = outputPathName
+
+    # Values to save in results.txt
+    training_time = 0
+    testing_time = 0
+    total_params = "N/A"
+    training_params = "N/A"
+
     # Write all args to args.txt
     layout = {
         "multitask": {
@@ -675,19 +716,49 @@ if __name__ == "__main__":
             "accuracy": ["Multiline", ["accuracy/sst", "accuracy/para", "accuracy/sts", "accuracy/total"]],
         },
     }
-    writer = SummaryWriter(writerName)
+    writer = SummaryWriter(outputPathName)
     writer.add_custom_scalars(layout)
 
     # Save all arguments to a file
-    with open(f'{writerName}/args.txt', 'w') as f:
+    with open(f'{outputPathName}/args.txt', 'w') as f:
         for arg in vars(args):
             f.write(f"{arg}: {getattr(args, arg)}\n")
 
+
     if(not args.testOnly):
-        train_multitask(args)
+        # Start timer to measure training time
+        start_time = datetime.datetime.now()
+        total_params, training_params = train_multitask(args)
+        end_time = datetime.datetime.now()
+        training_time = end_time - start_time
+        print(f"Training time: {training_time}")
     else:
         print("Skipping training and running test only!")
 
-    test_multitask(args)
+    # Start timer to measure testing time
+    start_time = datetime.datetime.now()
+    # Test the model
+    dev_sentiment_accuracy,_, _, \
+            dev_paraphrase_accuracy, _, _, \
+            dev_sts_corr, _, _ = test_multitask(args)
+    end_time = datetime.datetime.now()
+    testing_time = end_time - start_time
+
+    # Write results to a file
+    with open(f'{outputPathName}/results.txt', 'w') as f:
+        f.write(f"dev sentiment acc :: {dev_sentiment_accuracy :.3f}\n")
+        f.write(f"dev paraphrase acc :: {dev_paraphrase_accuracy :.3f}\n")
+        f.write(f"dev sts corr :: {dev_sts_corr :.3f}\n")
+        f.write(f"Training time: {training_time}\n")
+        f.write(f"Testing time: {testing_time}\n")
+        f.write(f"Total parameters: {total_params}\n")
+        f.write(f"Tunable parameters: {training_params}\n")
+
+    # Copy predictions output and model to the output directory
+    try:
+        shutil.copytree('predictions', f'{outputPathName}/predictions')
+        shutil.copyfile(args.filepath, f'{outputPathName}/model.pt')
+    except:
+        print("Error copying model or predictions to output directory")
 
     writer.close()
