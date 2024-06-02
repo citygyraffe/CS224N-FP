@@ -27,8 +27,7 @@ from torch.cuda.amp import GradScaler, autocast
 from torch.utils.tensorboard import SummaryWriter
 import datetime
 
-from smartloss import SMARTLoss
-from loss_functions import kl_loss, sym_kl_loss
+from smartloss import SMARTLoss, sym_kl_loss
 
 from datasets import (
     SentenceClassificationDataset,
@@ -163,12 +162,6 @@ class MultitaskBERT(nn.Module):
         return pooled_output
 
 
-    def predict_sentiment_from_embeddings(self, embeddings):
-        output = self.sentiment_dropout(embeddings)
-        logits = self.sentiment_classifier(output)
-        return logits
-
-
     def predict_sentiment(self, input_ids, attention_mask, perturb=False):
         '''Given a batch of sentences, outputs logits for classifying sentiment.
         There are 5 sentiment classes:
@@ -282,16 +275,18 @@ class BatchProcessor:
                                        batch['labels'].to(self.device))
 
             with autocast():
-                # logits = self.model.predict_sentiment(b_ids, b_mask)
-                # loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / self.args.batch_size
-                loss = loss_with_smart_regularization(model=self.model,
-                                                      eval_fn=self.model.predict_sentiment,
-                                                      input_ids1=b_ids,
-                                                      mask1=b_mask,
-                                                      labels=b_labels,
-                                                      batch_size=args.batch_size,
-                                                      alpha=SMART_ALPHA,
-                                                      lambda_reg=SMART_LAMBDA)
+                if args.smart:
+                    loss = loss_with_smart_regularization(model=self.model,
+                                                        eval_fn=self.model.predict_sentiment,
+                                                        input_ids1=b_ids,
+                                                        mask1=b_mask,
+                                                        labels=b_labels,
+                                                        batch_size=args.batch_size,
+                                                        alpha=args.smart_alpha,
+                                                        lambda_reg=args.smart_lambda)
+                else:
+                    logits = self.model.predict_sentiment(b_ids, b_mask)
+                    loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / self.args.batch_size
 
         elif task == "para":
             b_ids1, b_mask1, b_ids2, b_mask2, b_labels = (
@@ -303,18 +298,20 @@ class BatchProcessor:
             )
 
             with autocast():
-                # logits = self.model.predict_paraphrase(b_ids1, b_mask1, b_ids2, b_mask2)
-                # loss = F.binary_cross_entropy_with_logits(logits.view(-1), b_labels.view(-1).float(), reduction='sum') / self.args.batch_size
-                loss = loss_with_smart_regularization(model=self.model,
-                                                      eval_fn=self.model.predict_paraphrase,
-                                                      input_ids1=b_ids1,
-                                                      mask1=b_mask1,
-                                                      input_ids2=b_ids2,
-                                                      mask2=b_mask2,
-                                                      labels=b_labels,
-                                                      batch_size=args.batch_size,
-                                                      alpha=SMART_ALPHA,
-                                                      lambda_reg=SMART_LAMBDA)
+                if args.smart:
+                    loss = loss_with_smart_regularization(model=self.model,
+                                                        eval_fn=self.model.predict_paraphrase,
+                                                        input_ids1=b_ids1,
+                                                        mask1=b_mask1,
+                                                        input_ids2=b_ids2,
+                                                        mask2=b_mask2,
+                                                        labels=b_labels,
+                                                        batch_size=args.batch_size,
+                                                        alpha=args.smart_alpha,
+                                                        lambda_reg=args.smart_lambda)
+                else:
+                    logits = self.model.predict_paraphrase(b_ids1, b_mask1, b_ids2, b_mask2)
+                    loss = F.binary_cross_entropy_with_logits(logits.view(-1), b_labels.view(-1).float(), reduction='sum') / self.args.batch_size
 
         elif task == "sts":
             for _ in range(STS_TRAINING_SCALING_FACTOR):
@@ -327,18 +324,20 @@ class BatchProcessor:
                 )
 
                 with autocast():
-                    # logits = self.model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2).squeeze()
-                    # loss = F.mse_loss(logits, b_labels.view(-1).float(), reduction='sum') / self.args.batch_size
-                    loss = loss_with_smart_regularization(model=self.model,
-                                                          eval_fn=self.model.predict_similarity,
-                                                          input_ids1=b_ids1,
-                                                          mask1=b_mask1,
-                                                          input_ids2=b_ids2,
-                                                          mask2=b_mask2,
-                                                          labels=b_labels,
-                                                          batch_size=args.batch_size,
-                                                          alpha=SMART_ALPHA,
-                                                          lambda_reg=SMART_LAMBDA)
+                    if args.smart:
+                        loss = loss_with_smart_regularization(model=self.model,
+                                                            eval_fn=self.model.predict_similarity,
+                                                            input_ids1=b_ids1,
+                                                            mask1=b_mask1,
+                                                            input_ids2=b_ids2,
+                                                            mask2=b_mask2,
+                                                            labels=b_labels,
+                                                            batch_size=args.batch_size,
+                                                            alpha=args.smart_alpha,
+                                                            lambda_reg=args.smart_lambda)
+                    else:
+                        logits = self.model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2).squeeze()
+                        loss = F.mse_loss(logits, b_labels.view(-1).float(), reduction='sum') / self.args.batch_size
 
         else:
             raise ValueError(f"train_multitask::Unknown task: {task}")
@@ -370,7 +369,6 @@ def loss_with_smart_regularization(model, eval_fn, input_ids1, mask1, labels, ba
     get_smart_loss = SMARTLoss(model=model,
                                batch_size=batch_size,
                                eval_fn=eval_fn,
-                               loss_fn=kl_loss,
                                loss_last_fn=sym_kl_loss,
                                noise_var=alpha)
     if eval_fn == model.predict_sentiment:
@@ -380,70 +378,6 @@ def loss_with_smart_regularization(model, eval_fn, input_ids1, mask1, labels, ba
                                             input_ids2=input_ids2, mask2=mask2)
     # loss.backward()
     return loss
-
-
-def smart_regularization_2(model, eval_fn, input_ids, mask, labels, batch_size,
-                         optimizer, noise_var=0.01, input_ids2=None, mask2=None):
-    # Create adversarial inputs by adding small perturbations
-    # Perturb the first set of embeddings (for all tasks)
-    embeddings = model.bert(input_ids, mask)
-    embeddings.requires_grad = True
-    # noise = noise_var * torch.randn(embeddings.size()).to(embeddings.device)
-    # embeddings_perturbed = embeddings + noise
-    # Perturb the second set of embeddings (for paraphrase/similarity)
-    if eval_fn != model.predict_sentiment_from_embeddings:
-        embeddings2 = model.bert.embed(input_ids2)
-        embeddings2.requires_grad = True
-        # noise2 = noise_var * torch.randn(embeddings2.size()).to(embeddings2.device)
-        # embeddings2_perturbed = embeddings2 + noise2
-
-    # Compute the outputs for perturbed inputs
-    logits = eval_fn(embeddings, mask) if eval_fn == model.predict_sentiment_from_embeddings else eval_fn(embeddings, mask, embeddings2, mask2)
-
-    # Loss for SST
-    if eval_fn == model.predict_sentiment_from_embeddings:
-        loss = F.cross_entropy(logits, labels.view(-1), reduction='sum') / batch_size
-    # Loss for Paraphrase
-    elif eval_fn == model.predict_paraphrase_from_embeddings:
-        loss = F.binary_cross_entropy_with_logits(logits.view(-1), labels.view(-1).float(), reduction='sum') / batch_size
-    # Loss for STS
-    elif eval_fn == model.predict_similarity_from_embeddings:
-        logits = logits.squeeze()
-        loss = F.mse_loss(logits, labels.view(-1).float(), reduction='sum') / batch_size
-
-    # Reset gradients
-    optimizer.zero_grad()
-
-    # Step for adversarial direction
-    loss.backward()
-
-    # perturbed_grad = inputs_perturbed.grad.data
-    # if eval_fn == model.predict_paraphrase or eval_fn == model.predict_similarity:
-    #     perturbed_grad2 = inputs2_perturbed.grad.data
-
-    # Calculate gradients and update adversarial inputs
-    # with torch.no_grad():
-    #     grad_embeddings1 = embeddings_perturbed.grad
-    #     embeddings1_adv = embeddings - noise_var * grad_embeddings1
-    #     if eval_fn != model.predict_sentiment_from_embeddings:
-    #         grad_embeddings2 = embeddings2_perturbed.grad
-    #         embeddings2_adv = embeddings2 - noise_var * grad_embeddings2
-
-    # # Update inputs by stepping against the adversarial direction
-    # inputs_adv = inputs_perturbed - noise_var * perturbed_grad
-    # inputs_adv = inputs_adv.detach()  # Detach so it won't affect computation graph in the main step
-
-
-    # Compute the logits for the updated adversarial examples
-    # logits_adv = eval_fn(embeddings1_adv) if eval_fn == model.predict_sentiment_from_embeddings else eval_fn(input_ids, mask, input_ids2, mask2)
-    # loss_adv = nn.CrossEntropyLoss()(logits_adv, labels)
-
-
-    # Backpropagate the adversarially adjusted loss
-    # loss_adv.backward()
-    optimizer.step()
-
-    return loss.item()
 
 
 def train_multitask(args):
@@ -717,6 +651,11 @@ def get_args():
     parser.add_argument("--lora", action='store_true', default=False, help="Use LoRA for training")
     parser.add_argument("--lora_rank", type=int, default=0, help="Rank of LoRA matrix. 0 to skip LoRA")
     parser.add_argument("--lora_alpha", type=float, default=2.0, help="Alpha value for LoRA")
+
+    # SMART arguments
+    parser.add_argument("--smart", action='store_true', default=False, help="Use SMART regularization/optimization")
+    parser.add_argument("--smart_alpha", type=float, default=1e-5, help="Alpha value for SMART")
+    parser.add_argument("--smart_lambda", type=float, default=2e-2, help="Lambda value for SMART")
 
     args = parser.parse_args()
     return args
