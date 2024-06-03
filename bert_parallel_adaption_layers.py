@@ -15,7 +15,7 @@ class BertLayerWithParallelAdaption(BertLayer):
 
     def __init__(self, config, args, shared_adaption_layers_first = None, shared_adaption_layers_second = None, shared_attn_layers = None):
         super(BertLayerWithParallelAdaption, self).__init__(config)
-        
+
         self.device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
         self.config = config
         self.args = args
@@ -25,7 +25,7 @@ class BertLayerWithParallelAdaption(BertLayer):
         # This size was borrowed directly from Bert and PALS
         self.adaption_layer_size_pals = 204
         self.adaption_layer_size_low_rank = 100
-        
+
         # Set by the adaption layer type
         self.adaption_layer_size = None
         self.layer_index = BertLayerWithParallelAdaption.instance_counter
@@ -48,7 +48,7 @@ class BertLayerWithParallelAdaption(BertLayer):
             for _ in range(NUM_TASKS_SUPPORTED):
                 self.adaption_layer_list_first.append(nn.Linear(config.hidden_size, self.adaption_layer_size).to(self.device))
                 self.adaption_layer_list_second.append(nn.Linear(self.adaption_layer_size, config.hidden_size).to(self.device))
-        
+
         elif self.args.parallel_adaption_layers == 'pals':
             self.adaption_layer_size = self.adaption_layer_size_pals
             pal_attn_config.num_attention_heads = 6
@@ -58,7 +58,7 @@ class BertLayerWithParallelAdaption(BertLayer):
                 self.adaption_layer_list_first.append(nn.Linear(config.hidden_size, self.adaption_layer_size).to(self.device))
                 self.attn_list.append(BertSelfAttention(pal_attn_config).to(self.device))
                 self.adaption_layer_list_second.append(nn.Linear(self.adaption_layer_size, config.hidden_size).to(self.device))
-        
+
         elif self.args.parallel_adaption_layers == 'pals-shared':
             self.adaption_layer_size = self.adaption_layer_size_pals
             pal_attn_config.num_attention_heads = 6
@@ -73,11 +73,11 @@ class BertLayerWithParallelAdaption(BertLayer):
                         self.shared_attn_layers.append(BertSelfAttention(pal_attn_config).to(self.device))
             else:
                 print("Skipping creating shared adaption layers, already created!")
-            
+
             if not self.args.adaption_layer_shared_attention:
                 for _ in range(NUM_TASKS_SUPPORTED):
                     self.attn_list.append(BertSelfAttention(pal_attn_config).to(self.device))
-        
+
         elif self.args.parallel_adaption_layers == 'mixed':
             # This is a mixed mode where the first half of the layers are low-rank and the second half are PALS
             self.adaption_layer_size = self.adaption_layer_size_pals
@@ -96,7 +96,7 @@ class BertLayerWithParallelAdaption(BertLayer):
                                 self.shared_attn_layers.append(BertSelfAttention(pal_attn_config).to(self.device))
                     else:
                         print("Skipping creating shared adaption layers, already created!")
-                     
+
                     if not self.args.adaption_layer_shared_attention:
                         for _ in range(NUM_TASKS_SUPPORTED):
                             self.attn_list.append(BertSelfAttention(pal_attn_config).to(self.device))
@@ -104,13 +104,13 @@ class BertLayerWithParallelAdaption(BertLayer):
                     print("Mixed adaptation layer: low-rank at layer: ", self.layer_index)
                     self.adaption_layer_list_first.append(nn.Linear(config.hidden_size, self.adaption_layer_size).to(self.device))
                     self.adaption_layer_list_second.append(nn.Linear(self.adaption_layer_size, config.hidden_size).to(self.device))
-                    
+
         else:
             raise ValueError(f'Invalid adaption_layer_type: {self.adaption_mode}')
-    
+
         # Count the number of instances of this class
         BertLayerWithParallelAdaption.instance_counter += 1
-    
+
     def forward_parallel_adaption(self, hidden_states, attention_mask, task):
         # 1. Adaption layer. TS(h) = Vd * g(Ve * h)
         # g is a low-rank linear transformation for 'low-rank' adaption layers
@@ -118,7 +118,7 @@ class BertLayerWithParallelAdaption(BertLayer):
 
         batch_size, seq_length, hidden_size = hidden_states.size()
         flattened_hidden_states = hidden_states.view(-1, hidden_size)
-        
+
         if DEBUG_OUTPUT:
             print("TASK", task)
             print("SIZEOF hidden_states", hidden_states.size())
@@ -126,20 +126,20 @@ class BertLayerWithParallelAdaption(BertLayer):
             print("SIZEOF Ve transpose", self.Ve.transpose(0, 1).size())
             print("SIZEOF Vd", self.Vd.size())
             print("SIZEOF flattened_hidden_states", flattened_hidden_states.size())
-            
+
         adaption_output = None
         if self.args.parallel_adaption_layers == 'low-rank':
             adaption_output = self.adaption_layer_list_first[task](flattened_hidden_states)
             adaption_output = F.gelu(adaption_output)
             adaption_output = self.adaption_layer_list_second[task](adaption_output)
-        
+
         elif self.args.parallel_adaption_layers == 'pals':
             adaption_output = self.adaption_layer_list_first[task](flattened_hidden_states)
             adaption_output = adaption_output.view(batch_size, seq_length,  self.adaption_layer_size)
             adaption_output = self.attn_list[task].forward(adaption_output, attention_mask)
             adaption_output = self.adaption_layer_list_second[task](adaption_output)
             adaption_output = F.gelu(adaption_output)
-        
+
         elif self.args.parallel_adaption_layers == 'pals-shared':
             adaption_output = self.shared_adaption_layers_first[task](flattened_hidden_states)
             adaption_output = adaption_output.view(batch_size, seq_length,  self.adaption_layer_size)
@@ -149,7 +149,7 @@ class BertLayerWithParallelAdaption(BertLayer):
                 adaption_output = self.attn_list[task].forward(adaption_output, attention_mask)
             adaption_output = self.shared_adaption_layers_second[task](adaption_output)
             adaption_output = F.gelu(adaption_output)
-        
+
         elif self.args.parallel_adaption_layers == 'mixed':
             if self.layer_index < self.number_of_hidden_layers // 2:
                 adaption_output = self.shared_adaption_layers_first[task](flattened_hidden_states)
@@ -175,7 +175,7 @@ class BertLayerWithParallelAdaption(BertLayer):
         return adaption_output
 
     #OVERRIDE
-    def forward(self, hidden_states, attention_mask, task):
+    def forward(self, hidden_states, attention_mask, task, perturb=False):
         # 1. Multi-head attention layer. MH(h)
         attn_output = self.self_attention(hidden_states, attention_mask)
 
@@ -191,7 +191,7 @@ class BertLayerWithParallelAdaption(BertLayer):
         interm_output = self.interm_af(self.interm_dense(attn_output_normalized))
 
         if DEBUG_OUTPUT:
-            print("SIZEOF interm_output", interm_output.size()) 
+            print("SIZEOF interm_output", interm_output.size())
             print("SIZEOF attn_output_normalized", attn_output_normalized.size())
 
         # 4. Add-norm for feed forward. Original: LN(h + SA(h)) Now: LN(h + SA(h) + TS(h))
@@ -234,13 +234,18 @@ class BertModelWithParallelAdaption(BertModel):
 
         return hidden_states
 
-    def forward(self, input_ids, attention_mask, task):
+    def forward(self, input_ids, attention_mask, task, perturb=False):
         """
         input_ids: [batch_size, seq_len], seq_len is the max length of the batch
         attention_mask: same size as input_ids, 1 represents non-padding tokens, 0 represents padding tokens
         """
         # Get the embedding for each input token.
         embedding_output = self.embed(input_ids=input_ids)
+
+        # # SMART: Apply perturbation
+        if perturb:
+            noise = torch.randn_like(embedding_output, requires_grad=True) * self.noise_var
+            embedding_output += noise
 
         # Feed to a transformer (a stack of BertLayers).
         sequence_output = self.encode(embedding_output, attention_mask, task)
