@@ -12,6 +12,7 @@ class TaskScheduler:
 
     '''
     def __init__(self, args, tasks, task_lengths):
+        self.batch_counter = 0
         self.epoch_counter = 0
         self.task_counter = {task:0 for task in tasks}
         self.tasks = tasks
@@ -70,7 +71,12 @@ class TaskScheduler:
         if self.args.force_task != '':
             self.next_task = self.args.force_task
         elif self.args.scheduling_policy == 'round-robin':
-            self.next_task = self.tasks[self.epoch_counter % len(self.tasks)]
+            if(self.args.scheduling_mode == 'epoch'):
+                self.next_task = self.tasks[self.epoch_counter % len(self.tasks)]
+            elif(self.args.scheduling_mode == 'batch'):
+                self.next_task = self.tasks[self.batch_counter % len(self.tasks)]
+            else:
+                raise ValueError(f"Mode {self.args.scheduling_mode} not supported.")
         elif self.args.scheduling_policy == 'annealed-sampling':
             self.next_task = self.annealed_sampling()
         elif self.args.scheduling_policy == 'random':
@@ -82,6 +88,7 @@ class TaskScheduler:
             print(f"Epoch {self.epoch_counter}: Next task is {self.next_task}, scheduling mode: {self.args.scheduling_policy}, force task: {self.args.force_task}")
     
         self.task_counter[self.next_task] += 1
+        self.batch_counter += 1
         return self.next_task
 
     def __del__(self):
