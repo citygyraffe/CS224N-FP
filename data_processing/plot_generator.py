@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import argparse
 
-def load_and_plot_data(file_paths, x_label, y_label, title, legend_labels, use_time, outfile='training_metrics.png'):
+def load_and_plot_data(file_paths, x_label, y_label, title, legend_labels, use_time, outfile='training_metrics.png', highlight_max=False):
     # Setting up the plot - can be customized as needed
     plt.figure(figsize=(10, 5))
 
@@ -23,7 +23,14 @@ def load_and_plot_data(file_paths, x_label, y_label, title, legend_labels, use_t
             x_data = df['Step']
 
         # Plotting
-        plt.plot(x_data, df['Value'], marker='o', linestyle='-', label=label)
+        y_data = df['Value']
+        line, = plt.plot(x_data, df['Value'], marker='o', linestyle='-', label=label)
+
+        if highlight_max:
+            max_value = y_data.max()
+            max_index = y_data.idxmax()
+            plt.scatter(x_data[max_index], max_value, color='red')  # mark the maximum point
+            plt.text(x_data[max_index], max_value, f'{max_value:.3f}', color=line.get_color(), ha='right')
 
     plt.title(title)
     plt.xlabel(x_label)
@@ -46,6 +53,7 @@ def main():
     parser.add_argument('--legends', type=str, nargs='+', help="Custom legends for each file. Number of legends must match the number of files.")
     parser.add_argument('--use_time', action='store_true', help="Use 'Time (Seconds)' as the X-axis instead of 'Step'.")
     parser.add_argument('--outfile', type=str, default='training_metrics.png', help="Output file name for the plot.")
+    parser.add_argument('--highlight_max', action='store_true', help="Highlight the maximum value in the plot.")
 
     args = parser.parse_args()
 
@@ -58,7 +66,7 @@ def main():
         args.x_label = 'Time (Seconds)'
 
     # Load and plot data from the specified files
-    load_and_plot_data(args.files, args.x_label, args.y_label, args.title, args.legends if args.legends else args.files, args.use_time, outfile=args.outfile)
+    load_and_plot_data(args.files, args.x_label, args.y_label, args.title, args.legends if args.legends else args.files, args.use_time, outfile=args.outfile, highlight_max=args.highlight_max)
 
 if __name__ == "__main__":
     main()
