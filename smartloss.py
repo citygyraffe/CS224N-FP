@@ -36,6 +36,6 @@ class SMARTLoss(nn.Module):
 
     def forward(self, input_ids1, mask1, state, input_ids2=None, mask2=None):
         for i in count():
-            state_perturbed = self.eval_fn(input_ids1, mask1, perturb=True) if self.eval_fn == self.model.predict_sentiment else self.eval_fn(input_ids1, mask1, input_ids2, mask2, perturb=True)
+            state_perturbed = self.eval_fn(input_ids1, mask1, perturb=self.noise_var) if self.eval_fn == self.model.predict_sentiment else self.eval_fn(input_ids1, mask1, input_ids2, mask2, perturb=self.noise_var)
             if i == self.num_steps:
                 return self.loss_last_fn(state_perturbed, state) / self.batch_size

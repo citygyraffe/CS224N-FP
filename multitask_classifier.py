@@ -156,7 +156,7 @@ class MultitaskBERT(nn.Module):
             self.paraphrase_classifier = LinearWithLoRALayer(self.paraphrase_classifier, config.lora_rank, config.lora_alpha)
 
 
-    def forward(self, input_ids, attention_mask, task, perturb=False):
+    def forward(self, input_ids, attention_mask, task, perturb=None):
         'Takes a batch of sentences and produces embeddings for them.'
         # The final BERT embedding is the hidden state of [CLS] token (the first token)
         # Here, you can start by just returning the embeddings straight from BERT.
@@ -174,7 +174,7 @@ class MultitaskBERT(nn.Module):
         return pooled_output
 
 
-    def predict_sentiment(self, input_ids, attention_mask, perturb=False):
+    def predict_sentiment(self, input_ids, attention_mask, perturb=None):
         '''Given a batch of sentences, outputs logits for classifying sentiment.
         There are 5 sentiment classes:
         (0 - negative, 1- somewhat negative, 2- neutral, 3- somewhat positive, 4- positive)
@@ -190,7 +190,7 @@ class MultitaskBERT(nn.Module):
     def predict_paraphrase(self,
                            input_ids_1, attention_mask_1,
                            input_ids_2, attention_mask_2,
-                           perturb=False):
+                           perturb=None):
         '''Given a batch of pairs of sentences, outputs a single logit for predicting whether they are paraphrases.
         Note that your output should be unnormalized (a logit); it will be passed to the sigmoid function
         during evaluation.
@@ -225,7 +225,7 @@ class MultitaskBERT(nn.Module):
     def predict_similarity(self,
                            input_ids_1, attention_mask_1,
                            input_ids_2, attention_mask_2,
-                           perturb=False):
+                           perturb=None):
         '''Given a batch of pairs of sentences, outputs a single logit corresponding to how similar they are.
         Note that your output should be unnormalized (a logit).
         '''
@@ -364,7 +364,7 @@ class BatchProcessor:
 def loss_with_smart_regularization(model, eval_fn, input_ids1, mask1, labels, batch_size,
                                    alpha=1e-5, lambda_reg=2e-2, input_ids2=None, mask2=None):
     # Predict (unperturbed)
-    logits = eval_fn(input_ids1, mask1, perturb=alpha) if eval_fn == model.predict_sentiment else eval_fn(input_ids1, mask1, input_ids2, mask2, perturb=alpha)
+    logits = eval_fn(input_ids1, mask1, perturb=None) if eval_fn == model.predict_sentiment else eval_fn(input_ids1, mask1, input_ids2, mask2, perturb=None)
 
     # Loss for SST
     if eval_fn == model.predict_sentiment:
