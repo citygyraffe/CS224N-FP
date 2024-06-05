@@ -175,7 +175,7 @@ class BertLayerWithParallelAdaption(BertLayer):
         return adaption_output
 
     #OVERRIDE
-    def forward(self, hidden_states, attention_mask, task, perturb=False):
+    def forward(self, hidden_states, attention_mask, task, perturb=None):
         # 1. Multi-head attention layer. MH(h)
         attn_output = self.self_attention(hidden_states, attention_mask)
 
@@ -234,7 +234,7 @@ class BertModelWithParallelAdaption(BertModel):
 
         return hidden_states
 
-    def forward(self, input_ids, attention_mask, task, perturb=False):
+    def forward(self, input_ids, attention_mask, task, perturb=None):
         """
         input_ids: [batch_size, seq_len], seq_len is the max length of the batch
         attention_mask: same size as input_ids, 1 represents non-padding tokens, 0 represents padding tokens
@@ -244,8 +244,8 @@ class BertModelWithParallelAdaption(BertModel):
 
         # # SMART: Apply perturbation
         if perturb:
-            noise = torch.randn_like(embedding_output, requires_grad=True) * self.noise_var
-            embedding_output += noise
+            noise = torch.randn_like(embedding_output, requires_grad=True)
+            embedding_output += perturb * noise
 
         # Feed to a transformer (a stack of BertLayers).
         sequence_output = self.encode(embedding_output, attention_mask, task)
