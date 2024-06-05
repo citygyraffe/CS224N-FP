@@ -364,7 +364,7 @@ class BatchProcessor:
 def loss_with_smart_regularization(model, eval_fn, input_ids1, mask1, labels, batch_size,
                                    alpha=1e-5, lambda_reg=2e-2, input_ids2=None, mask2=None):
     # Predict (unperturbed)
-    logits = eval_fn(input_ids1, mask1, perturb=False) if eval_fn == model.predict_sentiment else eval_fn(input_ids1, mask1, input_ids2, mask2, perturb=False)
+    logits = eval_fn(input_ids1, mask1, perturb=alpha) if eval_fn == model.predict_sentiment else eval_fn(input_ids1, mask1, input_ids2, mask2, perturb=alpha)
 
     # Loss for SST
     if eval_fn == model.predict_sentiment:
