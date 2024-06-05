@@ -180,10 +180,14 @@ class BertLayerWithParallelAdaption(BertLayer):
         attn_output = self.self_attention(hidden_states, attention_mask)
 
         # 1a. Parallel adaption layer. TS(h)
-        adaption_output = self.forward_parallel_adaption(hidden_states, attention_mask, task)
+        adaption_output = None
+        if(task == 0):
+            if DEBUG_OUTPUT: print("TASK 0")
+            adaption_output = self.forward_parallel_adaption(hidden_states, attention_mask, task)
 
         # 2. Add-norm for multi-head attention. LN(h + MH(h))
-        if not self.args.adaption_layer_late_attach:
+        if not self.args.adaption_layer_late_attach and task == 0:
+            if DEBUG_OUTPUT: print("Adding adaption output to attention output")
             attn_output = attn_output + adaption_output
         attn_output_normalized = self.add_norm(hidden_states, attn_output, self.attention_dense, self.attention_dropout, self.attention_layer_norm)
 
@@ -195,7 +199,8 @@ class BertLayerWithParallelAdaption(BertLayer):
             print("SIZEOF attn_output_normalized", attn_output_normalized.size())
 
         # 4. Add-norm for feed forward. Original: LN(h + SA(h)) Now: LN(h + SA(h) + TS(h))
-        if self.args.adaption_layer_late_attach:
+        if self.args.adaption_layer_late_attach and task == 0:
+            if DEBUG_OUTPUT: print("Adding adaption output to interm output")
             attn_output_normalized = attn_output_normalized + adaption_output
         output = self.add_norm(attn_output_normalized, interm_output, self.out_dense, self.out_dropout, self.out_layer_norm)
 
