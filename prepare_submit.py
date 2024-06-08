@@ -4,7 +4,8 @@ import os
 import zipfile
 
 required_files = [p for p in os.listdir('.') if p.endswith('.py')] + \
-                 [f'predictions/{p}' for p in os.listdir('predictions')]
+                 [f'predictions/{p}' for p in os.listdir('predictions')] + \
+                 [f'data_processing/{p}' for p in os.listdir('data_processing')]
 
 def main():
     aid = 'cs224n_default_final_project_submission'
